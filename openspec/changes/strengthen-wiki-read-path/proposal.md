@@ -12,7 +12,10 @@
   - Phase 1：`wiki sync` 支援 Joplin notes pagination，補足 sync 統計與 malformed note failure。
   - Phase 2：`wiki query` 改善 stdlib lexical search，加入 top-N limit、title/body 權重、穩定 snippet 與 source metadata。
   - Phase 3：`wiki compile` 產生最小 graph / links artifact，先只從 notebook parent relation 與 Markdown note links 推出。
-  - Phase 4：明確保留 capture / writeback deferred boundary，不在本 change 實作 Telegram、Discord、`wiki approve` 或 Joplin writeback。
+  - Phase 4：新增 `wiki read <note-id>`，讓 Hermes 能讀取單頁 note 的本機 compiled/raw 內容，不只停在 search results。
+  - Phase 5：新增 `wiki links <note-id>`，讓 Hermes 能從 graph artifact 做最小 link traversal。
+  - Phase 6：為 `wiki query` / `wiki read` / `wiki links` 補上 evidence sufficiency protocol，讓 agent 能判斷目前回傳是否 source-backed、insufficient 或 graph-missing。
+  - Phase 7：明確保留 page synthesis、self-evolving loop、capture / writeback deferred boundary，不在本 change 實作 topic/entity wiki page、Error Book、feedback、consolidation、Telegram、Discord、`wiki approve` 或 Joplin writeback。
 - 保持 Node stdlib first，不新增 dependency。
 - 保持 foreground `wiki query` 只讀本機 compiled artifacts，不呼叫 Joplin Data API。
 - 保持 Hermes 使用本機 wiki tools；RAG / vector retrieval 不作為本 repo 的預設架構。
@@ -20,6 +23,8 @@
 ## Non-Goals
 
 - 不新增 RAG layer、embedding、vector DB、LLM summary、OCR 或 graph 推理。
+- 不實作 topic/entity wiki page synthesis。
+- 不實作 self-evolving memory loop、Error Book、feedback 或 consolidation。
 - 不實作 Telegram / Discord capture。
 - 不實作 Joplin writeback 或 `wiki approve`。
 - 不新增 daemon、queue、HTTP server 或 LaunchDaemon。

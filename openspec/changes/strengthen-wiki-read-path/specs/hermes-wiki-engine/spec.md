@@ -113,6 +113,108 @@ The Hermes Wiki Engine SHALL derive a deterministic local graph artifact from co
 - **WHEN** a raw or compiled note body links to another known note id
 - **THEN** `graph/graph.json` contains a note-to-note link edge for that resolvable target
 
+### Requirement: Read returns a local note by id
+
+The Hermes Wiki Engine SHALL expose `wiki read <note-id>` as a deterministic local command that returns one note from compiled or raw artifacts without calling Joplin Data API.
+
+#### Scenario: Known note is read from local artifacts
+
+- **GIVEN** compiled artifacts contain note `note-a`
+- **WHEN** the operator runs `wiki read note-a`
+- **THEN** the command returns JSON with `ok` set to `true`
+- **AND** the response includes note id, title, parent id, body hash, note text, source artifact metadata, and `evidence_status: "source_backed"`
+
+#### Scenario: Unknown note id returns not found evidence status
+
+- **WHEN** the operator runs `wiki read missing-note`
+- **THEN** the command returns JSON with `ok` set to `false`
+- **AND** the response contains stable code `NOTE_NOT_FOUND`
+- **AND** the response contains `evidence_status: "not_found"`
+
+#### Scenario: Read remains foreground local only
+
+- **WHEN** the operator runs `wiki read note-a`
+- **THEN** the command reads local artifacts
+- **AND** it does not call Joplin Data API, an embedding service, a vector database, an LLM, or an external retrieval API
+
+### Requirement: Links return local graph neighbors
+
+The Hermes Wiki Engine SHALL expose `wiki links <note-id>` as a deterministic local graph lookup over `graph/graph.json`.
+
+#### Scenario: Known note returns adjacent graph relationships
+
+- **GIVEN** `graph/graph.json` contains an edge from `note-a` to `note-b`
+- **WHEN** the operator runs `wiki links note-a`
+- **THEN** the command returns JSON with `ok` set to `true`
+- **AND** the response includes adjacent neighbors, matching edges, and `evidence_status: "source_backed"`
+
+#### Scenario: Missing graph artifact is reported explicitly
+
+- **WHEN** the operator runs `wiki links note-a` before `graph/graph.json` exists
+- **THEN** the command returns JSON with `ok` set to `false`
+- **AND** the response contains stable code `GRAPH_NOT_FOUND`
+- **AND** the response contains `evidence_status: "graph_missing"`
+
+#### Scenario: Unknown graph note returns not found evidence status
+
+- **WHEN** the operator runs `wiki links missing-note`
+- **THEN** the command returns JSON with `ok` set to `false`
+- **AND** the response contains stable code `NOTE_NOT_FOUND`
+- **AND** the response contains `evidence_status: "not_found"`
+
+### Requirement: Read path reports evidence sufficiency
+
+The Hermes Wiki Engine SHALL report deterministic evidence sufficiency metadata from read-path commands so Hermes can decide whether to continue searching, read a note, traverse links, or report insufficient data.
+
+#### Scenario: Query with matches is source-backed
+
+- **WHEN** `wiki query "local retrieval"` returns one or more local results
+- **THEN** the response contains `evidence_status: "source_backed"`
+- **AND** the response includes source-backed result metadata
+
+#### Scenario: Query without matches is insufficient
+
+- **WHEN** `wiki query "missing topic"` finds no local results
+- **THEN** the response contains `evidence_status: "insufficient"`
+- **AND** the response still returns the existing insufficient-data message
+
+#### Scenario: Evidence protocol remains deterministic
+
+- **WHEN** `wiki query`, `wiki read`, or `wiki links` reports `evidence_status`
+- **THEN** the value is derived only from local artifact availability and matched local sources
+- **AND** it is not derived from LLM confidence, semantic grading, or external verification
+
+### Requirement: Wiki page synthesis remains deferred
+
+The Hermes Wiki Engine SHALL NOT create synthesized topic or entity wiki pages during read path hardening.
+
+#### Scenario: Compile remains note-index based
+
+- **WHEN** `wiki compile` runs
+- **THEN** the engine writes compiled note and graph artifacts only
+- **AND** it does not create topic pages, entity pages, cross-note summaries, or synthesized wiki documents
+
+#### Scenario: Read returns source note content
+
+- **WHEN** `wiki read <note-id>` runs
+- **THEN** the command returns local source note content
+- **AND** it does not synthesize a new wiki page from multiple notes
+
+### Requirement: Self-evolving memory loop remains deferred
+
+The Hermes Wiki Engine SHALL keep self-evolving memory workflows non-mutating during read path hardening.
+
+#### Scenario: No feedback or consolidation write is performed
+
+- **WHEN** `wiki query`, `wiki read`, `wiki links`, or `wiki compile` runs
+- **THEN** the command does not write Error Book entries, feedback records, consolidation drafts, approved memory, or Joplin notes
+
+#### Scenario: Capture and approve stay deferred
+
+- **WHEN** an operator runs `wiki draft telegram`, `wiki draft discord`, or `wiki approve example-draft`
+- **THEN** the command returns stable not implemented JSON
+- **AND** it does not write Error Book entries, feedback records, consolidation drafts, approved memory, or Joplin notes
+
 ### Requirement: Capture and writeback remain deferred during read path hardening
 
 The Hermes Wiki Engine SHALL keep capture and writeback commands non-mutating while read path hardening is implemented.

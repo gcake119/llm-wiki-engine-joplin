@@ -15,13 +15,18 @@
 - 讓 malformed note 以 stable user-safe error 失敗，不寫出不可信 cache。
 - 讓 `wiki query` 支援 top-N limit、title/body 權重、穩定 snippet、source metadata。
 - 讓 `wiki compile` 產生最小 `graph/graph.json`，只包含 notebook parent relation 與 Markdown note links。
+- 讓 `wiki read <note-id>` 能從本機 artifacts 讀回單頁 note 內容。
+- 讓 `wiki links <note-id>` 能從本機 graph artifact 回傳鄰接 note / notebook links。
+- 讓 `wiki query`、`wiki read`、`wiki links` 回傳 deterministic evidence sufficiency metadata。
 - 讓 read path 對 Hermes 保持 wiki tool-use 形狀，不建立 RAG / vector retrieval 預設架構。
-- 明確保留 capture / writeback deferred boundary。
+- 明確保留 page synthesis、self-evolving loop、capture / writeback deferred boundary。
 
 **Non-Goals:**
 
 - 不新增 dependency。
 - 不引入 RAG layer、embedding、vector DB、LLM summary、OCR 或 graph 推理。
+- 不實作 topic/entity wiki page synthesis。
+- 不實作 self-evolving memory loop、Error Book、feedback 或 consolidation。
 - 不實作 Telegram / Discord capture。
 - 不實作 Joplin writeback、`wiki approve` 或 conflict resolution。
 - 不新增 daemon、queue、HTTP server 或 LaunchDaemon。
@@ -52,7 +57,31 @@ Alternative considered: keep the old RAG mental model. That was useful when loca
 
 Alternative considered: LLM relation extraction. That is deferred because it is slower, harder to test, and risks inventing edges.
 
-### Phase 4: Capture and writeback stay deferred
+### Phase 4: Local note read tool
+
+`wiki read <note-id>` SHALL read a single note from local compiled/raw artifacts. It SHALL NOT call Joplin Data API during foreground read. This makes Hermes wiki usage two-step: first query for candidate notes, then read source content by id.
+
+Alternative considered: return full body in every query result. That makes query output too large and couples search with reading, so it is not the minimal Hermes tool shape.
+
+### Phase 5: Link traversal tool
+
+`wiki links <note-id>` SHALL read `graph/graph.json` and return directly adjacent graph relationships for the requested note. The command is a local graph lookup, not a semantic explorer.
+
+Alternative considered: expose graph traversal only through `wiki query`. That hides the wiki shape from Hermes and makes link-following harder to reason about.
+
+### Phase 6: Evidence sufficiency without LLM audit
+
+Read-path commands SHALL return deterministic evidence metadata that tells Hermes whether the response is source-backed, insufficient, not found, or blocked by missing local artifacts. This SHALL be a protocol field, not an LLM judgment.
+
+Alternative considered: add an LLM evidence auditor. That would create another model-dependent path before the deterministic read tools are stable.
+
+### Phase 7: Page synthesis and self-evolving loop stay deferred
+
+Topic/entity wiki page synthesis, Error Book, feedback capture, consolidation, Telegram / Discord capture, Joplin writeback, and `wiki approve` SHALL remain out of scope. This change strengthens deterministic read and traversal tools only.
+
+Alternative considered: add synthesized topic pages after graph generation. That would mix read-path hardening with knowledge curation policy and should be handled by a later change after local tools are trustworthy.
+
+### Deferred capture and writeback boundary
 
 Telegram, Discord, Joplin writeback, and `wiki approve` SHALL remain out of scope. This change strengthens read path only.
 
@@ -119,7 +148,100 @@ Scope boundaries:
 - In scope: local structural graph from known note ids and Markdown links.
 - Out of scope: inferred relationships, topic extraction, ontology, LLM graph generation.
 
-### Phase 4: Deferred capture / writeback boundary
+### Phase 4: Local note read
+
+Observable behavior:
+
+- `wiki read <note-id>` returns a single note from local artifacts.
+- The command returns `id`, `title`, `parent_id`, `body_hash`, `plain_text`, and `source`.
+- The command does not call Joplin Data API, embeddings, vector search, LLMs, or external retrieval APIs.
+- Missing local artifacts or unknown note ids return stable JSON errors.
+
+Data shape additions:
+
+```json
+{
+  "ok": true,
+  "id": "note-a",
+  "title": "Local retrieval",
+  "parent_id": "folder-1",
+  "body_hash": "sha256:example",
+  "plain_text": "Hermes wiki local retrieval works",
+  "source": {
+    "artifact": "compiled/notes.json",
+    "raw_body": "raw/notes/note-a.md"
+  },
+  "evidence_status": "source_backed"
+}
+```
+
+Scope boundaries:
+
+- In scope: direct local note reads by id.
+- Out of scope: synthesized pages, cross-note summarization, Joplin foreground reads, LLM answer generation.
+
+### Phase 5: Link traversal
+
+Observable behavior:
+
+- `wiki links <note-id>` reads `graph/graph.json`.
+- The command returns directly adjacent nodes and edges for the requested note.
+- Missing graph artifact returns stable JSON with `evidence_status: "graph_missing"`.
+- Unknown note id returns stable JSON with `evidence_status: "not_found"`.
+
+Data shape additions:
+
+```json
+{
+  "ok": true,
+  "id": "note-a",
+  "neighbors": [
+    {
+      "id": "note-b",
+      "type": "note",
+      "title": "Related note",
+      "relation": "markdown_link"
+    }
+  ],
+  "edges": [
+    {
+      "from": "note-a",
+      "to": "note-b",
+      "type": "markdown_link"
+    }
+  ],
+  "evidence_status": "source_backed"
+}
+```
+
+Scope boundaries:
+
+- In scope: one-hop local graph lookup.
+- Out of scope: multi-hop planning, semantic relation inference, ontology, graph database.
+
+### Phase 6: Evidence sufficiency protocol
+
+Observable behavior:
+
+- `wiki query` returns `evidence_status: "source_backed"` when at least one local result is returned.
+- `wiki query` returns `evidence_status: "insufficient"` when no local result matches.
+- `wiki read` returns `evidence_status: "source_backed"` for known local notes and `evidence_status: "not_found"` for unknown ids.
+- `wiki links` returns `evidence_status: "source_backed"` for known graph-backed neighbors, `evidence_status: "not_found"` for unknown ids, and `evidence_status: "graph_missing"` when the graph artifact does not exist.
+
+Scope boundaries:
+
+- In scope: deterministic protocol fields that Hermes can inspect.
+- Out of scope: LLM confidence scoring, answer grading, fact verification, contradiction detection.
+
+### Phase 7: Deferred synthesis / self-evolving boundary
+
+Observable behavior:
+
+- No command creates topic/entity synthesized wiki pages in this change.
+- No command writes Error Book entries, feedback records, consolidated notes, or approved memory back to Joplin in this change.
+- `wiki draft telegram`, `wiki draft discord`, and `wiki approve` remain stable not implemented JSON.
+
+### Deferred capture / writeback boundary
 
 Observable behavior:
 
