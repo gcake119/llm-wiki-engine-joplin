@@ -10,6 +10,7 @@ const COMMANDS = new Set([
   "sync",
   "compile",
   "query",
+  "notify",
   "draft",
   "approve",
 ]);
@@ -31,6 +32,10 @@ export function joplinConfig(env = process.env) {
     apiUrl: env.WIKI_JOPLIN_API_URL || env.JOPLIN_API_URL || "http://127.0.0.1:41184",
     token: env.WIKI_JOPLIN_TOKEN || env.JOPLIN_TOKEN || "",
   };
+}
+
+function discordSystemWebhookUrl(env = process.env) {
+  return env.DISCORD_SYSTEM_WEBHOOK_URL || "";
 }
 
 export function status(stateDir = defaultStateDir()) {
@@ -320,6 +325,60 @@ export function query(question, { env = process.env } = {}) {
   };
 }
 
+function notifyMessage(rest) {
+  const messageFlagIndex = rest.indexOf("--message");
+  if (messageFlagIndex < 0) return "";
+  return rest.slice(messageFlagIndex + 1).join(" ").trim();
+}
+
+function isDiscordWebhookUrl(value) {
+  return (
+    value.startsWith("https://discord.com/api/webhooks/") ||
+    value.startsWith("https://discordapp.com/api/webhooks/")
+  );
+}
+
+export async function notifyDiscord(message, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  if (!message) {
+    return safeError("DISCORD_NOTIFY_MESSAGE_MISSING", "Notification message is required.");
+  }
+  const webhookUrl = discordSystemWebhookUrl(env);
+  if (!webhookUrl) {
+    return safeError(
+      "DISCORD_SYSTEM_WEBHOOK_URL_MISSING",
+      "Discord system notification webhook is not configured.",
+    );
+  }
+  if (!isDiscordWebhookUrl(webhookUrl)) {
+    return safeError(
+      "DISCORD_SYSTEM_WEBHOOK_URL_INVALID",
+      "Discord system notification webhook is invalid.",
+    );
+  }
+  if (typeof fetchImpl !== "function") {
+    return safeError("DISCORD_NOTIFY_UNAVAILABLE", "Fetch is not available.");
+  }
+
+  let response;
+  try {
+    response = await fetchImpl(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: message }),
+    });
+  } catch {
+    return safeError("DISCORD_NOTIFY_UNAVAILABLE", "Discord webhook is unavailable.");
+  }
+  if (!response.ok) {
+    return safeError("DISCORD_NOTIFY_FAILED", "Discord webhook returned an error.");
+  }
+  return {
+    ok: true,
+    state: "notified",
+    target: "discord_system",
+  };
+}
+
 export function help() {
   return [
     "Usage: wiki <command>",
@@ -329,6 +388,7 @@ export function help() {
     "  sync",
     "  compile",
     '  query "問題"',
+    '  notify discord --message "訊息"',
     "  draft telegram|discord ...",
     "  approve <draft-id>",
   ].join("\n");
@@ -357,6 +417,13 @@ export async function run(argv, env = process.env, deps = {}) {
   }
   if (command === "query") {
     return JSON.stringify(query(rest.join(" "), { env }), null, 2);
+  }
+  if (command === "notify" && rest[0] === "discord") {
+    return JSON.stringify(
+      await notifyDiscord(notifyMessage(rest.slice(1)), { env, ...deps }),
+      null,
+      2,
+    );
   }
   return JSON.stringify(notImplemented(command), null, 2);
 }

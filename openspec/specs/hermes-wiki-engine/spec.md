@@ -345,6 +345,28 @@ tests:
 -->
 
 ---
+### Requirement: System notifications use Discord webhook safely
+
+The Hermes Wiki Engine SHALL send system notifications to Discord through the configured system webhook. It MUST NOT print the webhook URL or token value in command output.
+
+#### Scenario: Notify command sends a Discord system message
+
+- **WHEN** an operator runs `wiki notify discord --message "example"` with a valid `DISCORD_SYSTEM_WEBHOOK_URL`
+- **THEN** the command posts the message to the configured Discord webhook
+- **AND** the command returns JSON with `ok` set to `true`, `state` set to `notified`, and `target` set to `discord_system`
+- **AND** the command output does not include the webhook URL
+
+#### Scenario: Missing webhook fails safely
+
+- **WHEN** an operator runs `wiki notify discord --message "example"` without `DISCORD_SYSTEM_WEBHOOK_URL`
+- **THEN** the command returns JSON with `ok` set to `false`, a stable missing-webhook code, and no secret value
+
+#### Scenario: Webhook failure is user-safe
+
+- **WHEN** Discord webhook delivery fails
+- **THEN** the command returns JSON with `ok` set to `false`, a stable notification-failed code, and no stack trace or webhook URL
+
+---
 ### Requirement: Capture sources write drafts before Joplin writeback
 
 The Hermes Wiki Engine SHALL treat Telegram and Discord as capture sources. It MUST write capture output to filesystem drafts before any Joplin writeback.

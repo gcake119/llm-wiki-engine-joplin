@@ -9,6 +9,10 @@ import { defaultStateDir, parseArgs, run } from "../src/wiki.js";
 test("parses known commands", () => {
   assert.deepEqual(parseArgs(["compile"]), { command: "compile", rest: [] });
   assert.deepEqual(parseArgs(["query", "問題"]), { command: "query", rest: ["問題"] });
+  assert.deepEqual(parseArgs(["notify", "discord"]), {
+    command: "notify",
+    rest: ["discord"],
+  });
 });
 
 test("falls back to help for unknown commands", () => {
@@ -425,6 +429,74 @@ test("query reports insufficient data for no matches", async () => {
   assert.equal(result.state, "insufficient_data");
   assert.equal(result.message, "資料不足");
   assert.deepEqual(result.results, []);
+});
+
+test("notify discord requires a message", async () => {
+  const result = JSON.parse(
+    await run(["notify", "discord"], {
+      DISCORD_SYSTEM_WEBHOOK_URL: "https://discord.com/api/webhooks/id/token",
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "DISCORD_NOTIFY_MESSAGE_MISSING");
+});
+
+test("notify discord fails safely when webhook is missing or invalid", async () => {
+  const missing = JSON.parse(
+    await run(["notify", "discord", "--message", "hello"], {}),
+  );
+  const invalid = JSON.parse(
+    await run(
+      ["notify", "discord", "--message", "hello"],
+      { DISCORD_SYSTEM_WEBHOOK_URL: "https://example.com/hook" },
+    ),
+  );
+
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, "DISCORD_SYSTEM_WEBHOOK_URL_MISSING");
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, "DISCORD_SYSTEM_WEBHOOK_URL_INVALID");
+});
+
+test("notify discord posts a system message without leaking the webhook", async () => {
+  const webhookUrl = "https://discord.com/api/webhooks/id/token-value";
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true };
+  };
+
+  const output = await run(
+    ["notify", "discord", "--message", "[Hermes Wiki] 測試"],
+    { DISCORD_SYSTEM_WEBHOOK_URL: webhookUrl },
+    { fetchImpl },
+  );
+  const result = JSON.parse(output);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "notified");
+  assert.equal(result.target, "discord_system");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, webhookUrl);
+  assert.equal(calls[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    content: "[Hermes Wiki] 測試",
+  });
+  assert.doesNotMatch(output, /token-value/);
+});
+
+test("notify discord reports webhook failures safely", async () => {
+  const output = await run(
+    ["notify", "discord", "--message", "hello"],
+    { DISCORD_SYSTEM_WEBHOOK_URL: "https://discord.com/api/webhooks/id/token-value" },
+    { fetchImpl: async () => ({ ok: false }) },
+  );
+  const result = JSON.parse(output);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "DISCORD_NOTIFY_FAILED");
+  assert.doesNotMatch(output, /token-value/);
 });
 
 test("future commands return stable not implemented json", async () => {
