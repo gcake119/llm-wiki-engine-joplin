@@ -10,7 +10,8 @@
 - [ ] 2.1 實作 Phase 2: Query quality 與 Query ranks lexical matches deterministically：title match 權重高於 body-only match；以 Node built-in test 驗證 spec example 的排序。
 - [ ] 2.2 實作 Query ranks lexical matches deterministically 的 top-N limit：`wiki query` 回傳結果不得超過預設 limit；以 Node built-in test 驗證超量 fixture。
 - [ ] 2.3 實作 query source metadata：每筆結果包含 note id、title、parent id、snippet、score；以 Node built-in test 驗證 JSON shape。
-- [ ] 2.4 確認 Phase 2: Lexical query improvements with stdlib only 不新增 dependency、不呼叫 Joplin Data API、不寫 lock/raw/compiled/status；以 `npm test` 與 code review 驗證。
+- [ ] 2.4 實作 Hermes uses local wiki tools instead of RAG：`wiki query` 與 `wiki compile` 不新增 RAG service、vector database、embedding pipeline 或 model-dependent retrieval；以 Node built-in test 或 code review 驗證。
+- [ ] 2.5 確認 Phase 2: Lexical query improvements with stdlib only 不新增 dependency、不呼叫 Joplin Data API、不寫 lock/raw/compiled/status；以 `npm test` 與 code review 驗證。
 
 ## 3. Phase 3: Minimal graph and links from existing artifacts
 

@@ -2,7 +2,9 @@
 
 `build-hermes-wiki-engine` 已建立最小 read path：`wiki sync` 寫 raw metadata/body cache，`wiki compile` 產出 `compiled/notes.json`，`wiki query` 做本機 keyword search。下一步不是換 retrieval 架構，而是把這條 read path 從 demo 級推到可長期跑的最小穩定版。
 
-成熟領域上，這是 retrieval / search pipeline hardening：ingestion completeness、normalization、lexical ranking、source attribution、link graph。主流做法會先確保 raw corpus 完整與可重建，再改 ranking，最後才加 graph 或 semantic retrieval。本 change 仍維持 stdlib lexical retrieval，不引入 embedding / vector DB。
+先前 RAG 是硬體限制下的務實取捨：本機設備不夠跑穩定 LLM 時，用 retrieval layer 減少模型負擔。接 Hermes 後，目標改成 LLM Wiki tool-use：Hermes 透過 deterministic local tools 查、讀、沿 links 探索 Joplin 長期知識，而不是把這個 repo 做成 RAG framework。
+
+成熟領域上，這是 retrieval / search pipeline hardening：ingestion completeness、normalization、lexical ranking、source attribution、link graph。主流做法會先確保 raw corpus 完整與可重建，再改 ranking，最後才加 graph 或 semantic retrieval。本 change 仍維持 stdlib lexical retrieval，不引入 RAG layer、embedding / vector DB。
 
 ## Goals / Non-Goals
 
@@ -13,12 +15,13 @@
 - 讓 malformed note 以 stable user-safe error 失敗，不寫出不可信 cache。
 - 讓 `wiki query` 支援 top-N limit、title/body 權重、穩定 snippet、source metadata。
 - 讓 `wiki compile` 產生最小 `graph/graph.json`，只包含 notebook parent relation 與 Markdown note links。
+- 讓 read path 對 Hermes 保持 wiki tool-use 形狀，不建立 RAG / vector retrieval 預設架構。
 - 明確保留 capture / writeback deferred boundary。
 
 **Non-Goals:**
 
 - 不新增 dependency。
-- 不引入 embedding、vector DB、LLM summary、OCR 或 graph 推理。
+- 不引入 RAG layer、embedding、vector DB、LLM summary、OCR 或 graph 推理。
 - 不實作 Telegram / Discord capture。
 - 不實作 Joplin writeback、`wiki approve` 或 conflict resolution。
 - 不新增 daemon、queue、HTTP server 或 LaunchDaemon。
@@ -36,6 +39,12 @@ Alternative considered: keep `limit: 100` and rely on query misses to reveal gap
 `wiki query` SHALL stay a local lexical search over `compiled/notes.json`. It can improve scoring and snippets with simple stdlib functions, but SHALL NOT add ranking libraries, embeddings, or model calls.
 
 Alternative considered: add vector search now. That is premature while corpus completeness, source metadata, and graph basics are still thin.
+
+### Hermes uses local wiki tools instead of RAG
+
+Hermes SHALL use this repo through deterministic local wiki tools and compiled artifacts. The read path MAY improve lexical search and graph traversal, but SHALL NOT introduce a RAG service, vector database, embedding pipeline, or model-dependent retrieval step in this change.
+
+Alternative considered: keep the old RAG mental model. That was useful when local models were too expensive to run, but it now adds architecture cost without matching the Hermes command-bridge direction.
 
 ### Phase 3: Minimal graph and links from existing artifacts
 
@@ -94,7 +103,7 @@ Observable behavior:
 Scope boundaries:
 
 - In scope: stdlib scoring, top-N limit, stable snippets, source metadata.
-- Out of scope: embeddings, semantic reranking, LLM answer generation.
+- Out of scope: RAG service, embeddings, semantic reranking, LLM answer generation.
 
 ### Phase 3: Minimal graph
 

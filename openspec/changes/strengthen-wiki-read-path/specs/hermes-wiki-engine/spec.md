@@ -73,6 +73,22 @@ The Hermes Wiki Engine SHALL rank local query results with deterministic lexical
 - **WHEN** the operator runs `wiki query "local retrieval"`
 - **THEN** the first result contains `id: "note-a"`, `title: "Local retrieval"`, `parent_id: "folder-1"`, a snippet containing `local retrieval`, and numeric `score`
 
+### Requirement: Hermes uses local wiki tools instead of RAG
+
+The Hermes Wiki Engine SHALL expose deterministic local wiki artifacts and commands for Hermes. It MUST NOT introduce a RAG service, vector database, embedding pipeline, or model-dependent retrieval step as part of read path hardening.
+
+#### Scenario: Query remains local and deterministic
+
+- **WHEN** an operator runs `wiki query "example"`
+- **THEN** the command reads completed local artifacts
+- **AND** it does not call an embedding service, vector database, LLM, or external retrieval API
+
+#### Scenario: Compile remains model-free
+
+- **WHEN** an operator runs `wiki compile`
+- **THEN** the command derives compiled notes and graph artifacts from local raw cache
+- **AND** it does not call an LLM, embedding model, or vector index
+
 ### Requirement: Compile produces a minimal graph artifact
 
 The Hermes Wiki Engine SHALL derive a deterministic local graph artifact from compiled notes without semantic inference.
