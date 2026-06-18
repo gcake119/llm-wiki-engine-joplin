@@ -20,13 +20,20 @@ Hermes Wiki Engine 是 Hermes 的本機長期記憶引擎。它基於 `joplin-ll
 Joplin Desktop
   -> Joplin Data API
   -> wiki sync / compile
-  -> local cache / graph / index
-  -> wiki query
+  -> local cache / compiled pages / graph / schema
+  -> wiki query / read / links
   -> Hermes
 
 Telegram / Discord
   -> wiki draft
   -> /Users/hermes/knowledge/drafts/
+  -> wiki approve
+  -> Joplin Data API
+
+Existing local memory refs
+  -> wiki draft consolidate
+  -> /Users/hermes/knowledge/drafts/
+  -> wiki audit
   -> wiki approve
   -> Joplin Data API
 ```
@@ -45,8 +52,10 @@ Telegram / Discord
   logs/
   raw/
   compiled/
+    schema.json
   graph/
   drafts/
+  audit/
 /Users/hermes/.config/hermes-knowledge/env
 ```
 
@@ -67,8 +76,12 @@ wiki status
 wiki sync
 wiki compile
 wiki query "問題"
+wiki read <ref>
+wiki links <ref>
+wiki audit
 wiki draft telegram ...
 wiki draft discord ...
+wiki draft consolidate --ref note:<id> ...
 wiki approve <draft-id>
 ```
 
@@ -92,6 +105,10 @@ preflight
 ```
 
 `wiki query` 只讀已完成 cache / graph / index，不在前台對話臨時重編全庫。回答必須帶來源筆記或路徑；找不到來源時回報資料不足。
+
+`wiki draft consolidate` 是背景整理入口。它只能從 operator 提供的整理內容與既有本機 refs 產生 reviewable draft，不得把整理結果直接放進 compiled pages 或寫回 Joplin。整理結果必須通過 `wiki approve`，再由下一輪 Joplin sync / compile 進入正式 read path。
+
+`wiki audit` 是本機 governance 檢查。它檢查 dangling link、missing source、evidence gap、consolidation draft 缺 target 等 deterministic 問題，不做 semantic grading，也不呼叫 LLM。
 
 ## Background Job Model
 
@@ -162,6 +179,18 @@ Status: draft
 ## Writeback Recommendation
 ```
 
+Consolidation draft 使用同一個 review gate，但來源是既有本機 refs：
+
+```text
+wiki draft consolidate --ref note:note-a --ref page:page-topic "整理內容"
+  -> drafts/<draft-id>.json
+  -> status: pending_review
+  -> provenance.refs: ["note:note-a", "page:page-topic"]
+  -> intended_target.conflict_behavior: manual_review
+```
+
+Hermes 可以協助建立 consolidation draft，但不得把 draft 當成 foreground answer source；回答記憶問題仍必須使用 `wiki query`、`wiki read`、`wiki links` 回傳的 source-backed evidence。
+
 ## First Slice
 
 先做 retrieval 主線：
@@ -190,6 +219,9 @@ wiki query "問題"
 - 跨使用者讀寫只透過 Joplin Data API。
 - `wiki compile` 使用 lock file + status JSON，不先做 queue 平台。
 - `wiki query` 不直接打 Joplin Data API 全庫搜尋。
+- `wiki read` / `wiki links` / `wiki audit` 只讀寫本機 artifacts。
+- `wiki draft consolidate` 不寫 raw cache、compiled pages、graph、audit 或 Joplin。
+- `wiki approve` 是唯一 Joplin writeback 入口。
 
 ## Non-goals
 
@@ -200,3 +232,5 @@ wiki query "問題"
 - 不第一版支援多 Discord server。
 - 不第一版做附件 OCR。
 - 不第一版做全自動「值得保存」判斷。
+- 不把 consolidation draft 自動升級為正式 compiled wiki page。
+- 不在 foreground read path 加入 LLM、embedding、vector DB 或 RAG service。

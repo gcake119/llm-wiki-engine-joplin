@@ -656,6 +656,43 @@ test("compile adds graph edges for resolvable Markdown note links only", async (
   );
 });
 
+test("compile writes a local wiki schema artifact", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-compile-"));
+  fs.mkdirSync(path.join(stateDir, "raw", "notes"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "raw", "notes-metadata.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-a",
+          title: "Schema source",
+          parent_id: "folder-1",
+          updated_time: 123,
+          body_hash: "hash-a",
+        },
+      ],
+    })}\n`,
+  );
+  fs.writeFileSync(path.join(stateDir, "raw", "notes", "note-a.md"), "Body");
+  const fetchImpl = async () => {
+    throw new Error("compile schema must stay local");
+  };
+
+  const result = JSON.parse(
+    await run(["compile"], { WIKI_STATE_DIR: stateDir }, { fetchImpl }),
+  );
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "compiled", "schema.json"), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(typeof schema.schema_version, "number");
+  assert.deepEqual(schema.ref_kinds, ["note", "page"]);
+  assert.ok(schema.draft_kinds.includes("consolidate"));
+  assert.ok(schema.page_model);
+  assert.ok(schema.governance_rules.includes("source_required"));
+});
+
 test("compile --notify sends success and failure system notifications", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-compile-"));
   const calls = [];
@@ -1248,6 +1285,9 @@ test("draft creates reviewable filesystem drafts for telegram and discord", asyn
 test("draft creates feedback and consolidation drafts without durable writes", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-"));
   const now = () => new Date("2026-06-18T03:10:00.000Z");
+  const fetchImpl = async () => {
+    throw new Error("draft consolidate must not call Joplin");
+  };
 
   const feedback = JSON.parse(
     await run(
@@ -1258,24 +1298,118 @@ test("draft creates feedback and consolidation drafts without durable writes", a
   );
   const consolidate = JSON.parse(
     await run(
-      ["draft", "consolidate", "--ref", "page:page-note-a", "Merge duplicate pages"],
+      [
+        "draft",
+        "consolidate",
+        "--ref",
+        "note:note-a",
+        "--ref",
+        "page:page-topic",
+        "Durable summary",
+      ],
       { WIKI_STATE_DIR: stateDir },
-      { now },
+      { now, fetchImpl },
     ),
   );
 
   const feedbackDraft = JSON.parse(
     fs.readFileSync(path.join(stateDir, "drafts", `${feedback.draft_id}.json`), "utf8"),
   );
+  const consolidateDraft = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "drafts", `${consolidate.draft_id}.json`), "utf8"),
+  );
   assert.equal(feedback.ok, true);
   assert.equal(consolidate.ok, true);
+  assert.equal(consolidate.state, "drafted");
+  assert.equal(consolidate.kind, "consolidate");
   assert.equal(feedbackDraft.kind, "feedback");
   assert.deepEqual(feedbackDraft.provenance.refs, ["note:note-a"]);
+  assert.equal(consolidateDraft.kind, "consolidate");
+  assert.equal(consolidateDraft.status, "pending_review");
+  assert.equal(consolidateDraft.content, "Durable summary");
+  assert.deepEqual(consolidateDraft.provenance.refs, [
+    "note:note-a",
+    "page:page-topic",
+  ]);
   assert.equal(fs.existsSync(path.join(stateDir, "raw")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "compiled")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "graph")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "audit")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "status.json")), false);
+});
+
+test("draft consolidate rejects unsafe refs before writing drafts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-"));
+
+  const result = JSON.parse(
+    await run(
+      ["draft", "consolidate", "--ref", "note:../secret", "Durable summary"],
+      { WIKI_STATE_DIR: stateDir },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "DRAFT_REF_UNSAFE");
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "secret.json")), false);
+});
+
+test("audit reports consolidation draft governance errors", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-audit-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.mkdirSync(path.join(stateDir, "drafts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [{ id: "note-a", title: "Source", plain_text: "Known source" }],
+    })}\n`,
+  );
+  fs.writeFileSync(
+    path.join(stateDir, "drafts", "draft-consolidate.json"),
+    `${JSON.stringify({
+      draft_id: "draft-consolidate",
+      kind: "consolidate",
+      status: "pending_review",
+      content: "Durable summary",
+      provenance: {
+        source: "consolidate",
+        input: "cli",
+        refs: ["note:missing-note", "page:page-missing"],
+      },
+      intended_target: {
+        type: "joplin_inbox",
+        notebook_id: "",
+        conflict_behavior: "manual_review",
+      },
+    })}\n`,
+  );
+
+  const result = JSON.parse(await run(["audit"], { WIKI_STATE_DIR: stateDir }));
+  const errorBook = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "audit", "error-book.json"), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.kind_counts.draft_target_missing, 1);
+  assert.equal(result.kind_counts.missing_source, 2);
+  assert.ok(
+    errorBook.entries.some((entry) => (
+      entry.kind === "draft_target_missing" &&
+      entry.ref === "draft-consolidate"
+    )),
+  );
+  assert.ok(
+    errorBook.entries.some((entry) => (
+      entry.kind === "missing_source" &&
+      entry.ref === "draft-consolidate:note:missing-note"
+    )),
+  );
+  assert.ok(
+    errorBook.entries.some((entry) => (
+      entry.kind === "missing_source" &&
+      entry.ref === "draft-consolidate:page:page-missing"
+    )),
+  );
 });
 
 test("approve gates Joplin writeback on complete draft metadata", async () => {

@@ -174,6 +174,32 @@ function markdownNoteLinks(markdown) {
   return [...markdown.matchAll(/\]\(:\/([A-Za-z0-9_-]+)\)/g)].map((match) => match[1]);
 }
 
+function wikiSchema() {
+  return {
+    schema_version: 1,
+    ref_kinds: ["note", "page"],
+    draft_kinds: [...DRAFT_KINDS],
+    page_model: {
+      required_fields: [
+        "page_id",
+        "title",
+        "aliases",
+        "tags",
+        "summary",
+        "sections",
+        "links",
+        "sources",
+      ],
+      section_required_fields: ["heading", "text", "sources"],
+    },
+    governance_rules: [
+      "source_required",
+      "known_source_ref",
+      "draft_target_required",
+    ],
+  };
+}
+
 function sourceBackedPages(notes) {
   return notes.map((note) => {
     const text = note.plain_text || "";
@@ -291,6 +317,7 @@ export function compile({ env = process.env, now = () => new Date() } = {}) {
   const rawCachePath = path.join(stateDir, "raw", "notes-metadata.json");
   const compiledPath = path.join(stateDir, "compiled", "notes.json");
   const pagesPath = path.join(stateDir, "compiled", "pages.json");
+  const schemaPath = path.join(stateDir, "compiled", "schema.json");
   const graphPath = path.join(stateDir, "graph", "graph.json");
 
   if (!fs.existsSync(rawCachePath)) {
@@ -343,6 +370,7 @@ export function compile({ env = process.env, now = () => new Date() } = {}) {
     const pages = sourceBackedPages(notes);
     writeJson(compiledPath, { notes });
     writeJson(pagesPath, { pages });
+    writeJson(schemaPath, wikiSchema());
     writePageFiles(stateDir, pages);
     writeJson(graphPath, {
       nodes: notes.map((note) => ({
@@ -636,6 +664,14 @@ function auditEntry(kind, ref, message, artifact) {
   return { kind, ref, message, artifact };
 }
 
+function readDrafts(stateDir) {
+  const draftsDir = path.join(stateDir, "drafts");
+  if (!fs.existsSync(draftsDir)) return [];
+  return fs.readdirSync(draftsDir)
+    .filter((entry) => entry.endsWith(".json"))
+    .map((entry) => readJson(path.join(draftsDir, entry)));
+}
+
 export function audit({ env = process.env } = {}) {
   const stateDir = defaultStateDir(env);
   const notesPath = path.join(stateDir, "compiled", "notes.json");
@@ -645,6 +681,8 @@ export function audit({ env = process.env } = {}) {
 
   const notes = fs.existsSync(notesPath) ? readJson(notesPath).notes || [] : [];
   const noteIds = new Set(notes.map((note) => note.id));
+  const pages = fs.existsSync(pagesPath) ? readJson(pagesPath).pages || [] : [];
+  const pageIds = new Set(pages.map((page) => page.page_id));
 
   if (fs.existsSync(graphPath)) {
     const graph = readJson(graphPath);
@@ -661,10 +699,8 @@ export function audit({ env = process.env } = {}) {
     }
   }
 
-  if (fs.existsSync(pagesPath)) {
-    const pages = readJson(pagesPath);
-    const pageIds = new Set((pages.pages || []).map((page) => page.page_id));
-    for (const page of pages.pages || []) {
+  if (pages.length > 0) {
+    for (const page of pages) {
       for (const link of page.links || []) {
         if (!pageIds.has(link)) {
           entries.push(auditEntry(
@@ -708,6 +744,32 @@ export function audit({ env = process.env } = {}) {
     }
   }
 
+  for (const draftData of readDrafts(stateDir)) {
+    if (draftData.kind !== "consolidate") continue;
+    if (!draftData.intended_target?.notebook_id) {
+      entries.push(auditEntry(
+        "draft_target_missing",
+        draftData.draft_id || "unknown-draft",
+        "Consolidation draft has no target notebook id.",
+        "drafts",
+      ));
+    }
+    for (const refValue of draftData.provenance?.refs || []) {
+      const ref = parseRef(refValue);
+      const known =
+        (ref.kind === "note" && noteIds.has(ref.id)) ||
+        (ref.kind === "page" && pageIds.has(ref.id));
+      if (!known) {
+        entries.push(auditEntry(
+          "missing_source",
+          `${draftData.draft_id || "unknown-draft"}:${refValue}`,
+          "Consolidation draft references a missing source ref.",
+          "drafts",
+        ));
+      }
+    }
+  }
+
   entries.sort((a, b) => {
     return a.kind.localeCompare(b.kind) || a.ref.localeCompare(b.ref);
   });
@@ -741,12 +803,30 @@ function draftParts(rest) {
   return { refs, content: content.join(" ").trim() };
 }
 
+function validateDraftRefs(kind, refs) {
+  if (kind !== "consolidate") return null;
+  for (const refValue of refs) {
+    const ref = parseRef(refValue);
+    if (!["note", "page"].includes(ref.kind)) {
+      return safeError("DRAFT_REF_UNSAFE", "Draft ref kind is not supported.");
+    }
+    try {
+      safeNoteId(ref.id);
+    } catch {
+      return safeError("DRAFT_REF_UNSAFE", "Draft ref is not safe.");
+    }
+  }
+  return null;
+}
+
 export function draft(kind, rest = [], { env = process.env, now = () => new Date() } = {}) {
   if (!DRAFT_KINDS.has(kind)) {
     return safeError("DRAFT_KIND_UNSUPPORTED", "Draft kind is not supported.");
   }
 
   const { refs, content } = draftParts(rest);
+  const refError = validateDraftRefs(kind, refs);
+  if (refError) return refError;
   if (!content) {
     return safeError("DRAFT_CONTENT_MISSING", "Draft content is required.");
   }
