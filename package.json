@@ -1,0 +1,15 @@
+{
+  "name": "hermes-wiki-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "wiki": "./src/wiki.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
