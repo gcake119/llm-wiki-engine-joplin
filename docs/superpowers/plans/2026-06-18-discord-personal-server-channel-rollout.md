@@ -48,10 +48,11 @@ Expected: 可以新增 category 與 text channel。
 ```text
 使用說明
 hermes-指令
+系統通知
 收集規則
 ```
 
-Expected: 側欄顯示 `00｜控制台`，底下有三個文字頻道。
+Expected: 側欄顯示 `00｜控制台`，底下有四個文字頻道。
 
 - [ ] **Step 3: 建立 `01｜收集箱` 類別**
 
@@ -228,6 +229,37 @@ Expected: `#收集規則` 明確區分 Discord、Joplin 與任務系統。
 
 Expected: `#hermes-指令` 沒有承諾尚未存在的 bot 或自動化。
 
+- [ ] **Step 4: 在 `#系統通知` 貼上推播邊界**
+
+貼上：
+
+```text
+這個頻道只放 Hermes / wiki runtime 狀態，不放知識內容正文。
+
+放這裡：
+- wiki sync 成功／失敗
+- wiki compile 成功／失敗
+- Discord poll 成功／失敗
+- Joplin writeback 成功／失敗
+- token、權限、連線問題的 safe error code
+
+不要放這裡：
+- draft 正文
+- 長篇原始內容
+- 專案 follow-up
+- 主題整理結果
+- token、stack trace、個資原文
+
+內容推播請回到對應頻道：
+- Joplin 寫入等待 → #準備寫入-joplin
+- Joplin 寫入完成 → #已批准紀錄
+- 專案內容 → 對應 #專案-*
+- 長期主題內容 → 對應 #主題-*
+- 無法判斷主題 → #待整理
+```
+
+Expected: `#系統通知` 明確限制為 runtime health，不承擔知識內容推播。
+
 ### Task 3: 驗收頻道是否符合收集箱定位
 
 **Files:**
@@ -295,3 +327,23 @@ wiki
 ```
 
 Expected: Joplin 是長期知識庫 SSOT；Discord 只做 capture 與 draft staging，沒有被描述成正式知識庫、正式分類或任務系統，也沒有自動寫回承諾。
+
+- [ ] **Step 4: 檢查推播分流邊界**
+
+確認 `#系統通知` 中包含：
+
+```text
+這個頻道只放 Hermes / wiki runtime 狀態，不放知識內容正文。
+```
+
+確認內容 routing 規則存在：
+
+```text
+Joplin 寫入等待 → #準備寫入-joplin
+Joplin 寫入完成 → #已批准紀錄
+專案內容 → 對應 #專案-*
+長期主題內容 → 對應 #主題-*
+無法判斷主題 → #待整理
+```
+
+Expected: 系統狀態才進 `#系統通知`；知識內容推播回到對應主題、專案或整理頻道。
