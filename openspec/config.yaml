@@ -1,0 +1,40 @@
+schema: spec-driven
+
+context: |
+  Hermes Wiki Engine 是 Hermes 可呼叫的本機 wiki / knowledge engine。
+  Joplin 是長期知識庫 SSOT；Hermes 只透過 `wiki` command bridge 查詢本機長期記憶。
+  Joplin 整合邊界只能走 Joplin Data API，不讀主使用者的 Joplin SQLite 或 profile。
+  Telegram 與 Discord 是 capture source，必須先產生 filesystem draft，人工 approve 後才可寫回 Joplin。
+
+  Tech stack:
+  - Node.js >= 20, ES modules, Node stdlib first
+  - Built-in `node:test` for tests
+  - Local JSON / Markdown files for raw cache, compiled index, status, and lock
+
+  Development principles:
+  - Keep the CLI small: `status`, `sync`, `compile`, `query`, `draft`, `approve`
+  - Do not add dependencies unless the current phase cannot be completed with stdlib
+  - Keep foreground `wiki query` read-only against completed local cache / compiled index
+  - Do not let `wiki query` call Joplin Data API or trigger full-library compile
+  - Keep Joplin writeback, Telegram, Discord, LaunchDaemon, graph, embeddings, vector DB, LLM summaries, and OCR deferred until their phase is explicitly planned
+  - User-facing output must be safe and must not print tokens, secret env contents, or raw stack traces
+
+rules:
+  proposal:
+    - Write in Traditional Chinese.
+    - State user problem, product boundary, non-goals, and affected capability.
+    - Explain mature-domain framing before proposing custom architecture.
+  design:
+    - Write in Traditional Chinese.
+    - Keep the retrieval pipeline phased as raw body cache -> thin compile -> thin query unless a later decision changes it.
+    - Call out read/write boundaries for Joplin Data API and filesystem cache.
+    - Prefer boring stdlib file formats before introducing services or dependencies.
+  tasks:
+    - Write in Traditional Chinese.
+    - Keep tasks grouped by phase and make each phase independently testable.
+    - Include the smallest verification command for each phase.
+    - Mark deferred surfaces explicitly instead of leaving them implied.
+  spec:
+    - Write requirements and scenarios in English.
+    - Use SHALL / MUST for behavioral contracts.
+    - Every query or writeback behavior must include source, safety, and failure scenarios.
