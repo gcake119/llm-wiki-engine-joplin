@@ -12,41 +12,41 @@
 
 ## 2. Phase 2：raw body cache
 
-- [ ] 2.1 延伸 `wiki sync`：仍只透過 Joplin Data API 抓 note body，不讀 Joplin SQLite 或 profile path。
-- [ ] 2.2 寫入 `raw/notes/<note-id>.md`：每筆 synced note 都有獨立 body file。
-- [ ] 2.3 保持 `raw/notes-metadata.json` 為 compact manifest：只保存 `id`、`title`、`parent_id`、`updated_time`、`body_hash`，不重複完整 body。
-- [ ] 2.4 確認 body hash 由實際 body 計算，重跑 sync 對相同 body 產生穩定 hash。
-- [ ] 2.5 測試 token-safe failure、body file 寫入、metadata 不含完整 body、lock cleanup。
-- [ ] 2.6 確認本 phase 不實作 `compile`、`query`、Telegram、Discord、Joplin writeback、LaunchDaemon。
+- [x] 2.1 延伸 `wiki sync`：仍只透過 Joplin Data API 抓 note body，不讀 Joplin SQLite 或 profile path。
+- [x] 2.2 寫入 `raw/notes/<note-id>.md`：每筆 synced note 都有獨立 body file。
+- [x] 2.3 保持 `raw/notes-metadata.json` 為 compact manifest：只保存 `id`、`title`、`parent_id`、`updated_time`、`body_hash`，不重複完整 body。
+- [x] 2.4 確認 body hash 由實際 body 計算，重跑 sync 對相同 body 產生穩定 hash。
+- [x] 2.5 測試 token-safe failure、body file 寫入、metadata 不含完整 body、lock cleanup。
+- [x] 2.6 確認本 phase 不實作 `compile`、`query`、Telegram、Discord、Joplin writeback、LaunchDaemon。
 
 ## 3. Phase 3：thin compile
 
-- [ ] 3.1 實作 `wiki compile` 只讀 `raw/notes-metadata.json` 與 `raw/notes/*.md`，不呼叫 Joplin Data API。
-- [ ] 3.2 缺 raw cache 時回傳 stable user-safe error，不建立空 compiled index 假裝成功。
-- [ ] 3.3 產出 `compiled/notes.json`，每筆包含 `id`、`title`、`parent_id`、`updated_time`、`body_hash`、`plain_text`。
-- [ ] 3.4 `plain_text` 先用本機最小 Markdown 清理，不新增 dependency，不做 LLM summary、embedding、graph、tags、backlinks。
-- [ ] 3.5 成功 compile 後更新 `status.json`，記錄 `last_job: "compile"`、時間、notes compiled、warnings。
-- [ ] 3.6 以 Node built-in test 驗證 deterministic output、missing raw error、compile 不碰 Joplin、status update。
+- [x] 3.1 實作 `wiki compile` 只讀 `raw/notes-metadata.json` 與 `raw/notes/*.md`，不呼叫 Joplin Data API。
+- [x] 3.2 缺 raw cache 時回傳 stable user-safe error，不建立空 compiled index 假裝成功。
+- [x] 3.3 產出 `compiled/notes.json`，每筆包含 `id`、`title`、`parent_id`、`updated_time`、`body_hash`、`plain_text`。
+- [x] 3.4 `plain_text` 先用本機最小 Markdown 清理，不新增 dependency，不做 LLM summary、embedding、graph、tags、backlinks。
+- [x] 3.5 成功 compile 後更新 `status.json`，記錄 `last_job: "compile"`、時間、notes compiled、warnings。
+- [x] 3.6 以 Node built-in test 驗證 deterministic output、missing raw error、compile 不碰 Joplin、status update。
 
 ## 4. Phase 4：thin query
 
-- [ ] 4.1 實作 `wiki query "問題"` 只讀 `compiled/notes.json`，不呼叫 Joplin Data API、不建立 lock、不寫 raw cache。
-- [ ] 4.2 使用 Node stdlib 做最小 keyword search；先以 title + plain_text 命中與簡單 score 排序。
-- [ ] 4.3 回傳 source-backed JSON：note id、title、snippet、score。
-- [ ] 4.4 找不到結果時回傳 user-facing `資料不足`，不得編造答案。
-- [ ] 4.5 缺 compiled index 時回傳 stable user-safe error，提示先跑 `wiki compile`。
-- [ ] 4.6 以 Node built-in test 驗證查詢命中、無命中、缺 index、query 不碰 Joplin。
+- [x] 4.1 實作 `wiki query "問題"` 只讀 `compiled/notes.json`，不呼叫 Joplin Data API、不建立 lock、不寫 raw cache。
+- [x] 4.2 使用 Node stdlib 做最小 keyword search；先以 title + plain_text 命中與簡單 score 排序。
+- [x] 4.3 回傳 source-backed JSON：note id、title、snippet、score。
+- [x] 4.4 找不到結果時回傳 user-facing `資料不足`，不得編造答案。
+- [x] 4.5 缺 compiled index 時回傳 stable user-safe error，提示先跑 `wiki compile`。
+- [x] 4.6 以 Node built-in test 驗證查詢命中、無命中、缺 index、query 不碰 Joplin。
 
 ## 5. Deferred surfaces
 
-- [ ] 5.1 Telegram capture 延後：等 retrieval 主線穩定後，才實作 `wiki draft telegram ...`。
-- [ ] 5.2 Discord capture 延後：第一版仍限定個人伺服器與 allowlisted channel，但不在 retrieval change 內實作。
-- [ ] 5.3 Joplin writeback / `wiki approve` 延後：這是寫入正式知識庫的高風險面，需另行確認 inbox notebook 與人工 approve contract。
-- [ ] 5.4 LaunchDaemon / Hermes runtime install 延後：先讓手動 CLI 穩定，再包背景化。
-- [ ] 5.5 Graph、embedding、vector DB、LLM summary、附件 OCR 延後：等 `raw -> compiled -> query` 跑通後再評估。
+- [x] 5.1 Telegram capture 延後：等 retrieval 主線穩定後，才實作 `wiki draft telegram ...`。
+- [x] 5.2 Discord capture 延後：第一版仍限定個人伺服器與 allowlisted channel，但不在 retrieval change 內實作。
+- [x] 5.3 Joplin writeback / `wiki approve` 延後：這是寫入正式知識庫的高風險面，需另行確認 inbox notebook 與人工 approve contract。
+- [x] 5.4 LaunchDaemon / Hermes runtime install 延後：先讓手動 CLI 穩定，再包背景化。
+- [x] 5.5 Graph、embedding、vector DB、LLM summary、附件 OCR 延後：等 `raw -> compiled -> query` 跑通後再評估。
 
 ## 6. Verification
 
-- [ ] 6.1 每個 phase 完成後執行 `npm test`。
-- [ ] 6.2 每個 phase 完成後執行對應手動 smoke：`node src/wiki.js status`、`sync`、`compile`、`query`。
-- [ ] 6.3 每個 phase 完成後檢查 `git status --short`，確認沒有意外 runtime cache、secret 或 generated local state 進版控。
+- [x] 6.1 每個 phase 完成後執行 `npm test`。
+- [x] 6.2 每個 phase 完成後執行對應手動 smoke：`node src/wiki.js status`、`sync`、`compile`、`query`。
+- [x] 6.3 每個 phase 完成後檢查 `git status --short`，確認沒有意外 runtime cache、secret 或 generated local state 進版控。
