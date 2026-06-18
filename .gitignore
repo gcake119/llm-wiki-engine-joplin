@@ -1,0 +1,4 @@
+.agents/
+.spectra/
+docs/superpowers/plans/
+openspec/.vector-search.db*
