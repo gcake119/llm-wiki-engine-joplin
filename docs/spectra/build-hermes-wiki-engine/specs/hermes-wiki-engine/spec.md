@@ -47,6 +47,27 @@ The Hermes Wiki Engine SHALL use Joplin Data API as the only Joplin integration 
 - **WHEN** Joplin Data API is reachable and authentication succeeds
 - **THEN** `wiki sync` writes a raw metadata cache containing note id, title, parent id, updated time, and body hash for each synced note
 
+### Requirement: Sync stores raw note bodies for later compile
+
+The Hermes Wiki Engine SHALL store synced Joplin note bodies in the raw cache so compile and query phases can run from local files without calling Joplin during foreground retrieval.
+
+#### Scenario: Successful sync writes note body files
+
+- **WHEN** Joplin Data API returns note bodies during `wiki sync`
+- **THEN** the engine writes each body to `raw/notes/<note-id>.md`
+
+#### Scenario: Metadata manifest stays compact
+
+- **WHEN** `wiki sync` writes `raw/notes-metadata.json`
+- **THEN** the manifest contains note id, title, parent id, updated time, and body hash
+- **AND** it does not duplicate the full note body
+
+#### Scenario: Raw body sync remains read-only against Joplin
+
+- **WHEN** `wiki sync` stores raw note bodies
+- **THEN** it uses Joplin Data API read operations only
+- **AND** it does not create, update, or delete Joplin notes
+
 ### Requirement: Jobs use a single lock and observable status
 
 The Hermes Wiki Engine SHALL prevent concurrent sync or compile jobs with a single lock file and SHALL publish job results through `status.json`.
@@ -61,6 +82,32 @@ The Hermes Wiki Engine SHALL prevent concurrent sync or compile jobs with a sing
 - **WHEN** `wiki sync` completes successfully
 - **THEN** `status.json` records `ok`, `state`, `last_job`, `started_at`, `finished_at`, `notes_seen`, and `warnings`
 
+### Requirement: Compile builds a thin local index
+
+The Hermes Wiki Engine SHALL compile raw cached notes into the smallest local index needed for source-backed keyword retrieval.
+
+#### Scenario: Compile reads only raw cache
+
+- **WHEN** an operator runs `wiki compile`
+- **THEN** the command reads `raw/notes-metadata.json` and `raw/notes/*.md`
+- **AND** it does not call Joplin Data API
+
+#### Scenario: Missing raw cache fails safely
+
+- **WHEN** an operator runs `wiki compile` before raw cache exists
+- **THEN** the command returns JSON with `ok` set to `false`, a stable missing-raw-cache code, and a user-safe message
+
+#### Scenario: Compile writes notes index
+
+- **WHEN** raw cache exists and compile succeeds
+- **THEN** the command writes `compiled/notes.json`
+- **AND** each compiled note contains id, title, parent id, updated time, body hash, and plain text
+
+#### Scenario: Compile updates status
+
+- **WHEN** `wiki compile` completes successfully
+- **THEN** `status.json` records a successful compile job and the number of compiled notes
+
 ### Requirement: Foreground query reads completed local memory
 
 The Hermes Wiki Engine SHALL answer memory queries from completed local cache, graph, or index data. It SHALL NOT trigger full-library compile during a foreground Hermes query.
@@ -74,6 +121,27 @@ The Hermes Wiki Engine SHALL answer memory queries from completed local cache, g
 
 - **WHEN** `wiki query "example"` is run before the retrieval slice is implemented
 - **THEN** the command returns stable JSON indicating that the query contract exists but retrieval is not implemented yet
+
+#### Scenario: Query reads compiled notes index
+
+- **WHEN** an operator runs `wiki query "example"` after `compiled/notes.json` exists
+- **THEN** the command searches the compiled local index
+- **AND** it does not call Joplin Data API
+
+#### Scenario: Query returns source-backed results
+
+- **WHEN** local keyword search finds matching compiled notes
+- **THEN** the command returns note id, title, snippet, and score for each result
+
+#### Scenario: Query reports insufficient data
+
+- **WHEN** local keyword search finds no matching compiled note
+- **THEN** the command returns a user-facing `資料不足` response instead of inventing an answer
+
+#### Scenario: Query requires compiled index
+
+- **WHEN** an operator runs `wiki query "example"` before `compiled/notes.json` exists
+- **THEN** the command returns a stable user-safe error that tells the operator to run `wiki compile`
 
 ### Requirement: Capture sources write drafts before Joplin writeback
 

@@ -12,6 +12,7 @@
 - 定義 Hermes retrieval memory：Hermes 查詢已完成 cache / graph / index，回答必須附來源。
 - 定義 Telegram / Discord capture：先產生 filesystem draft，人工 approve 後才寫回 Joplin。
 - 定義第一個 apply slice：搬到 `/Users/caiyijun/project/hermes-wiki-engine`，實作 `wiki status`、`wiki sync`、Joplin Data API preflight、raw metadata cache、lock file 與 `status.json`。
+- 在同一個 change 內分期規劃 retrieval 主線：raw body cache、thin compile、thin query，先用 Node stdlib 與本機 JSON / Markdown 檔案，不新增 retrieval dependency。
 
 ## Capabilities
 
