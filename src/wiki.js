@@ -331,6 +331,10 @@ function notifyMessage(rest) {
   return rest.slice(messageFlagIndex + 1).join(" ").trim();
 }
 
+function wantsNotify(rest) {
+  return rest.includes("--notify");
+}
+
 function isDiscordWebhookUrl(value) {
   return (
     value.startsWith("https://discord.com/api/webhooks/") ||
@@ -379,14 +383,35 @@ export async function notifyDiscord(message, { env = process.env, fetchImpl = gl
   };
 }
 
+function systemNotificationMessage(command, result) {
+  if (result.ok) {
+    const count =
+      command === "sync" ? `notes_seen=${result.notes_seen ?? 0}` :
+      command === "compile" ? `notes_compiled=${result.notes_compiled ?? 0}` :
+      "";
+    return `[Hermes Wiki] ${command} 成功${count ? `：${count}` : ""}`;
+  }
+  return `[Hermes Wiki] ${command} 失敗：${result.code || "UNKNOWN_ERROR"}`;
+}
+
+async function withSystemNotification(command, result, { env, fetchImpl }) {
+  return {
+    ...result,
+    notification: await notifyDiscord(systemNotificationMessage(command, result), {
+      env,
+      fetchImpl,
+    }),
+  };
+}
+
 export function help() {
   return [
     "Usage: wiki <command>",
     "",
     "Commands:",
     "  status",
-    "  sync",
-    "  compile",
+    "  sync [--notify]",
+    "  compile [--notify]",
     '  query "問題"',
     '  notify discord --message "訊息"',
     "  draft telegram|discord ...",
@@ -407,10 +432,20 @@ export async function run(argv, env = process.env, deps = {}) {
   if (command === "help") return help();
   if (command === "status") return JSON.stringify(status(defaultStateDir(env)), null, 2);
   if (command === "sync") {
-    return JSON.stringify(await sync({ env, ...deps }), null, 2);
+    const result = await sync({ env, ...deps });
+    return JSON.stringify(
+      wantsNotify(rest) ? await withSystemNotification("sync", result, { env, ...deps }) : result,
+      null,
+      2,
+    );
   }
   if (command === "compile") {
-    return JSON.stringify(compile({ env, ...deps }), null, 2);
+    const result = compile({ env, ...deps });
+    return JSON.stringify(
+      wantsNotify(rest) ? await withSystemNotification("compile", result, { env, ...deps }) : result,
+      null,
+      2,
+    );
   }
   if (command === "query" && rest.length === 0) {
     return "請在 wiki query 後面加上問題。";

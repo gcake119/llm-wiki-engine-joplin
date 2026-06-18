@@ -221,6 +221,85 @@ test("sync writes raw note body files with stable metadata hash", async () => {
   assert.equal(fs.existsSync(path.join(stateDir, "lock")), false);
 });
 
+test("sync --notify sends a system notification after success", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-sync-"));
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/folders")) {
+      return { ok: true, json: async () => ({ items: [{ id: "folder-1" }] }) };
+    }
+    if (pathname.endsWith("/notes")) {
+      return {
+        ok: true,
+        json: async () => ({
+          items: [
+            {
+              id: "note-1",
+              title: "First note",
+              parent_id: "folder-1",
+              updated_time: 123,
+              body: "body",
+            },
+          ],
+        }),
+      };
+    }
+    return { ok: true };
+  };
+
+  const result = JSON.parse(
+    await run(
+      ["sync", "--notify"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+        DISCORD_SYSTEM_WEBHOOK_URL: "https://discord.com/api/webhooks/id/token-value",
+      },
+      { fetchImpl },
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.notification.ok, true);
+  assert.equal(result.notification.target, "discord_system");
+  const notifyCall = calls.find((call) => call.options.method === "POST");
+  assert.ok(notifyCall);
+  assert.deepEqual(JSON.parse(notifyCall.options.body), {
+    content: "[Hermes Wiki] sync 成功：notes_seen=1",
+  });
+  assert.doesNotMatch(JSON.stringify(result), /token-value/);
+});
+
+test("sync --notify reports primary failure and notification result separately", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-sync-"));
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return { ok: true };
+  };
+
+  const result = JSON.parse(
+    await run(
+      ["sync", "--notify"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        DISCORD_SYSTEM_WEBHOOK_URL: "https://discord.com/api/webhooks/id/token-value",
+      },
+      { fetchImpl },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "JOPLIN_TOKEN_MISSING");
+  assert.equal(result.notification.ok, true);
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    content: "[Hermes Wiki] sync 失敗：JOPLIN_TOKEN_MISSING",
+  });
+  assert.doesNotMatch(JSON.stringify(result), /token-value/);
+});
+
 test("sync rejects unsafe note ids before writing body files", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-sync-"));
   const outsidePath = path.join(stateDir, "escaped.md");
@@ -342,6 +421,54 @@ test("compile writes deterministic compiled notes from raw cache only", async ()
   assert.equal(statusJson.last_job, "compile");
   assert.equal(statusJson.notes_compiled, 1);
   assert.equal(fs.existsSync(path.join(stateDir, "lock")), false);
+});
+
+test("compile --notify sends success and failure system notifications", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-compile-"));
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return { ok: true };
+  };
+  const env = {
+    WIKI_STATE_DIR: stateDir,
+    DISCORD_SYSTEM_WEBHOOK_URL: "https://discord.com/api/webhooks/id/token-value",
+  };
+
+  const missingRaw = JSON.parse(
+    await run(["compile", "--notify"], env, { fetchImpl }),
+  );
+  assert.equal(missingRaw.ok, false);
+  assert.equal(missingRaw.code, "WIKI_RAW_CACHE_MISSING");
+  assert.equal(missingRaw.notification.ok, true);
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
+    content: "[Hermes Wiki] compile 失敗：WIKI_RAW_CACHE_MISSING",
+  });
+
+  fs.mkdirSync(path.join(stateDir, "raw", "notes"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "raw", "notes-metadata.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-1",
+          title: "First note",
+          parent_id: "folder-1",
+          updated_time: 123,
+          body_hash: "hash-1",
+        },
+      ],
+    })}\n`,
+  );
+  fs.writeFileSync(path.join(stateDir, "raw", "notes", "note-1.md"), "body");
+
+  const compiled = JSON.parse(await run(["compile", "--notify"], env, { fetchImpl }));
+  assert.equal(compiled.ok, true);
+  assert.equal(compiled.notification.ok, true);
+  assert.deepEqual(JSON.parse(calls.at(-1).options.body), {
+    content: "[Hermes Wiki] compile 成功：notes_compiled=1",
+  });
+  assert.doesNotMatch(JSON.stringify(compiled), /token-value/);
 });
 
 test("query fails safely when compiled index is missing", async () => {

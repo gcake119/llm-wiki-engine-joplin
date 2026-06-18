@@ -366,6 +366,22 @@ The Hermes Wiki Engine SHALL send system notifications to Discord through the co
 - **WHEN** Discord webhook delivery fails
 - **THEN** the command returns JSON with `ok` set to `false`, a stable notification-failed code, and no stack trace or webhook URL
 
+#### Scenario: Sync can notify system status explicitly
+
+- **WHEN** an operator runs `wiki sync --notify`
+- **THEN** the command runs the normal sync behavior
+- **AND** it sends a system notification summarizing sync success or failure
+- **AND** the primary sync result remains visible in command output
+- **AND** the command output does not include the webhook URL
+
+#### Scenario: Compile can notify system status explicitly
+
+- **WHEN** an operator runs `wiki compile --notify`
+- **THEN** the command runs the normal compile behavior
+- **AND** it sends a system notification summarizing compile success or failure
+- **AND** the primary compile result remains visible in command output
+- **AND** the command output does not include the webhook URL
+
 ---
 ### Requirement: Capture sources write drafts before Joplin writeback
 
