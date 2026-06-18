@@ -184,49 +184,111 @@ The Hermes Wiki Engine SHALL report deterministic evidence sufficiency metadata 
 - **THEN** the value is derived only from local artifact availability and matched local sources
 - **AND** it is not derived from LLM confidence, semantic grading, or external verification
 
-### Requirement: Wiki page synthesis remains deferred
+### Requirement: Compile produces source-backed wiki pages
 
-The Hermes Wiki Engine SHALL NOT create synthesized topic or entity wiki pages during read path hardening.
+The Hermes Wiki Engine SHALL compile source-backed topic or entity wiki page artifacts from local raw and compiled source notes.
 
-#### Scenario: Compile remains note-index based
+#### Scenario: Compile writes page artifacts
 
 - **WHEN** `wiki compile` runs
-- **THEN** the engine writes compiled note and graph artifacts only
-- **AND** it does not create topic pages, entity pages, cross-note summaries, or synthesized wiki documents
+- **THEN** the engine writes local page artifacts and a page index
+- **AND** each compiled page includes page id, title, aliases, tags, summary, sections, links, and source note references
 
-#### Scenario: Read returns source note content
+#### Scenario: Fact-bearing page sections keep source references
 
-- **WHEN** `wiki read <note-id>` runs
-- **THEN** the command returns local source note content
-- **AND** it does not synthesize a new wiki page from multiple notes
+- **WHEN** a compiled wiki page contains a fact-bearing section
+- **THEN** that section includes one or more source note ids
+- **AND** the page can be traced back to local source notes
 
-### Requirement: Self-evolving memory loop remains deferred
+##### Example: section sources
 
-The Hermes Wiki Engine SHALL keep self-evolving memory workflows non-mutating during read path hardening.
+- **GIVEN** compiled page `page-local-retrieval` has section `Command semantics`
+- **AND** the section text states that `wiki query` finds candidates and `wiki read` loads source-backed content
+- **WHEN** the page artifact is inspected
+- **THEN** that section contains `sources: ["note-a"]`
 
-#### Scenario: No feedback or consolidation write is performed
+#### Scenario: Compile does not write synthesized pages to Joplin
 
-- **WHEN** `wiki query`, `wiki read`, `wiki links`, or `wiki compile` runs
-- **THEN** the command does not write Error Book entries, feedback records, consolidation drafts, approved memory, or Joplin notes
+- **WHEN** `wiki compile` produces source-backed wiki pages
+- **THEN** the command writes only local artifacts
+- **AND** it does not write synthesized pages to Joplin
 
-#### Scenario: Capture and approve stay deferred
+### Requirement: Read path supports page-aware refs
 
-- **WHEN** an operator runs `wiki draft telegram`, `wiki draft discord`, or `wiki approve example-draft`
-- **THEN** the command returns stable not implemented JSON
-- **AND** it does not write Error Book entries, feedback records, consolidation drafts, approved memory, or Joplin notes
+The Hermes Wiki Engine SHALL use explicit local refs so Hermes can distinguish source notes from compiled wiki pages during search, read, and link traversal.
 
-### Requirement: Capture and writeback remain deferred during read path hardening
+#### Scenario: Query returns typed refs
 
-The Hermes Wiki Engine SHALL keep capture and writeback commands non-mutating while read path hardening is implemented.
+- **WHEN** `wiki query "local retrieval"` returns local candidates
+- **THEN** each result includes a `ref`
+- **AND** each result identifies whether the ref is a source note or compiled page
 
-#### Scenario: Draft commands remain non-mutating
+#### Scenario: Read accepts note and page refs
 
-- **WHEN** an operator runs `wiki draft telegram` or `wiki draft discord`
-- **THEN** the command returns stable not implemented JSON
-- **AND** it does not write raw cache, compiled index, graph, status, or Joplin notes
+- **WHEN** the operator runs `wiki read note:note-a`
+- **THEN** the command reads a local source note
+- **WHEN** the operator runs `wiki read page:local-retrieval`
+- **THEN** the command reads a local compiled page
 
-#### Scenario: Approve command remains non-mutating
+#### Scenario: Links accepts note and page refs
 
-- **WHEN** an operator runs `wiki approve example-draft`
-- **THEN** the command returns stable not implemented JSON
+- **WHEN** the operator runs `wiki links note:note-a` or `wiki links page:local-retrieval`
+- **THEN** the command returns one-hop local graph relationships for that ref
+
+### Requirement: Audit writes deterministic Error Book entries
+
+The Hermes Wiki Engine SHALL expose `wiki audit` to record deterministic local artifact errors in an Error Book without using LLM grading.
+
+#### Scenario: Audit records structural errors
+
+- **WHEN** local artifacts contain a dangling link, missing source reference, unsupported page claim, stale artifact, or evidence gap
+- **THEN** `wiki audit` writes an Error Book entry with id, kind, ref, message, sources, status, and created timestamp
+
+#### Scenario: Audit reports counts by kind
+
+- **WHEN** `wiki audit` completes
+- **THEN** the command returns JSON with total error count and counts grouped by kind
+
+#### Scenario: Audit remains local and non-mutating toward Joplin
+
+- **WHEN** `wiki audit` runs
+- **THEN** it reads and writes only local audit artifacts
+- **AND** it does not write Joplin notes or call an LLM
+
+### Requirement: Draft commands create filesystem drafts
+
+The Hermes Wiki Engine SHALL route Telegram capture, Discord capture, feedback, and consolidation into reviewable filesystem drafts before any durable Joplin writeback.
+
+#### Scenario: Capture commands create reviewable drafts
+
+- **WHEN** an operator runs `wiki draft telegram` or `wiki draft discord` with local input
+- **THEN** the command writes a filesystem draft with draft id, kind, source, target, body, provenance, status, and created timestamp
 - **AND** it does not write Joplin notes
+
+#### Scenario: Feedback and consolidation create reviewable drafts
+
+- **WHEN** an operator runs `wiki draft feedback` or `wiki draft consolidate`
+- **THEN** the command writes a filesystem draft with provenance and intended target
+- **AND** it does not write raw cache, compiled pages, graph, Error Book, or Joplin notes
+
+### Requirement: Approve gates Joplin writeback
+
+The Hermes Wiki Engine SHALL make `wiki approve <draft-id>` the only command that can write approved memory back to Joplin.
+
+#### Scenario: Approved draft writes to Joplin through Data API
+
+- **GIVEN** a filesystem draft has provenance, target notebook, and conflict behavior
+- **WHEN** the operator runs `wiki approve <draft-id>`
+- **THEN** the command writes the approved content through Joplin Data API
+- **AND** it returns stable JSON with the Joplin note id
+
+#### Scenario: Approval failure keeps draft reviewable
+
+- **WHEN** Joplin writeback fails during `wiki approve <draft-id>`
+- **THEN** the command returns stable JSON with `ok` set to `false`
+- **AND** the local draft and provenance remain available for review
+
+#### Scenario: Non-approve commands do not write Joplin
+
+- **WHEN** `wiki sync`, `wiki compile`, `wiki query`, `wiki read`, `wiki links`, `wiki audit`, or `wiki draft` runs
+- **THEN** the command does not write Joplin notes
