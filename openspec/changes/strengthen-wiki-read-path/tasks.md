@@ -46,54 +46,40 @@
 - [ ] 7.2 實作 Compile produces source-backed wiki pages 的 source references：每個 fact-bearing section 必須包含至少一個 source note id；以 Node built-in test 驗證缺 source 的 section 被拒絕或標記為 evidence gap。
 - [ ] 7.3 確認 Phase 7: Source-backed wiki page model 不建立 unsourced summaries、ontology、graph inference 或 cloud LLM calls；以 code review 與 `npm test` 驗證。
 
-## 8. Phase 8: Source-backed synthesis command
+## 8. Phase 8: Source-backed page artifacts through compile
 
-- [ ] 8.1 實作 Phase 8: Source-backed synthesis command 與 Synthesize creates source-backed page drafts：新增 `wiki synthesize <ref...>`，從 explicit local refs 產生 kind `synthesized_page` 的 filesystem draft；以 Node built-in test 驗證 draft shape、provenance refs、source refs、`status: "draft"`。
-- [ ] 8.2 實作 Synthesize creates source-backed page drafts 的 explicit refs boundary：`wiki synthesize` 沒有 refs 時回 stable JSON error `SYNTHESIZE_REFS_REQUIRED`；以 Node built-in test 驗證。
-- [ ] 8.3 實作 Compile produces source-backed wiki pages 的 local page artifacts：`wiki compile` 成功後可寫入 `compiled/pages.json` 與 local page files；以 Node built-in test 驗證 artifacts 存在且可重建。
-- [ ] 8.4 確認 Phase 8: Source-backed synthesis command 不寫 Joplin、raw cache、graph、Error Book 或 foreground query state；以 Node built-in test 與 CLI smoke 驗證。
+- [ ] 8.1 實作 Phase 8: Source-backed page artifacts through compile 與 Compile produces source-backed wiki pages 的 local page artifacts：`wiki compile` 成功後可寫入 `compiled/pages.json` 與 local page files；以 Node built-in test 驗證 artifacts 存在且可重建。
+- [ ] 8.2 實作 Compile produces source-backed wiki pages 的 local-only boundary：`wiki compile` 產生 pages 時不寫 Joplin、drafts、Error Book 或 foreground query state；以 Node built-in test 驗證。
+- [ ] 8.3 確認 Phase 8: Source-backed page artifacts through compile 不新增 `wiki synthesize`，且不在 `wiki query` 期間建立 pages；以 code review 與 CLI smoke 驗證 query 不改變 compiled artifacts。
 
 ## 9. Phase 9: Page-aware traversal semantics
 
 - [ ] 9.1 實作 Phase 9: Page-aware traversal semantics 與 Read path supports page-aware refs：`wiki query` 結果包含 `ref` 與 `kind`，可區分 `note:<id>` 與 `page:<id>`；以 Node built-in test 驗證。
 - [ ] 9.2 實作 Read path supports page-aware refs 的 `wiki read` 行為：`wiki read note:<id>` 讀 source note，`wiki read page:<id>` 讀 compiled page；以 Node built-in test 驗證兩種 refs。
 - [ ] 9.3 實作 Read path supports page-aware refs 的 `wiki links` 行為：`wiki links note:<id>` 與 `wiki links page:<id>` 都回 one-hop local graph relationships；以 Node built-in test 驗證。
-- [ ] 9.4 確認 Phase 9: Page-aware traversal semantics 不做 hidden retrieval 或 automatic multi-hop planning；以 code review 與 `npm test` 驗證。
+- [ ] 9.4 確認 Phase 9: Page-aware traversal semantics 不新增 `wiki ask`、hidden retrieval 或 automatic multi-hop planning；以 code review 與 `npm test` 驗證。
 
-## 10. Phase 10: Optional ask orchestration
+## 10. Phase 10: Local audit artifact
 
-- [ ] 10.1 實作 Phase 10: Optional ask orchestration 與 Ask composes local wiki evidence：新增 `wiki ask "question"`，在 local evidence sufficient 時回 answer、citations、`evidence_status: "source_backed"`；以 Node built-in test 驗證 cited answer shape。
-- [ ] 10.2 實作 Ask composes local wiki evidence 的 insufficient behavior：證據不足時回 `ok: false` 與 `evidence_status: "insufficient"`，不產生捏造答案；以 Node built-in test 驗證。
-- [ ] 10.3 確認 Phase 10: Optional ask orchestration 不寫 local artifacts、drafts、Error Book、Joplin，也不呼叫 Joplin Data API、embedding、vector DB 或 external retrieval API；以 code review 與 `npm test` 驗證。
+- [ ] 10.1 實作 Phase 10: Local audit artifact 與 Audit writes deterministic Error Book entries：新增 `wiki audit`，對 dangling link、missing source、unsupported claim、stale artifact、evidence gap 寫入 `audit/error-book.json`；以 Node built-in test 驗證 entries shape。
+- [ ] 10.2 實作 Audit writes deterministic Error Book entries 的 counts by kind：`wiki audit` 回傳 total error count 與 kind counts；以 Node built-in test 驗證 JSON output。
+- [ ] 10.3 確認 Phase 10: Local audit artifact 不新增 `wiki error-book`、不使用 LLM grading、不寫 Joplin、不自動修復 compiled artifacts；以 code review 與 `npm test` 驗證。
 
-## 11. Phase 11: Deterministic audit and error-book command
+## 11. Phase 11: Draft-first capture, feedback, and consolidation
 
-- [ ] 11.1 實作 Phase 11: Deterministic audit and error-book command 與 Audit writes deterministic Error Book entries：新增 `wiki audit`，對 dangling link、missing source、unsupported claim、stale artifact、evidence gap 寫入 `audit/error-book.json`；以 Node built-in test 驗證 entries shape。
-- [ ] 11.2 實作 Audit writes deterministic Error Book entries 的 counts by kind：`wiki audit` 回傳 total error count 與 kind counts；以 Node built-in test 驗證 JSON output。
-- [ ] 11.3 實作 Error Book command manages audit entries：新增 `wiki error-book list`、`wiki error-book show <entry-id>`、`wiki error-book close <entry-id>`；以 Node built-in test 驗證 list/show/close 與 `ERROR_BOOK_ENTRY_NOT_FOUND`。
-- [ ] 11.4 確認 Phase 11: Deterministic audit and error-book command 不使用 LLM grading、不寫 Joplin、不自動修復 compiled artifacts；以 code review 與 `npm test` 驗證。
+- [ ] 11.1 實作 Phase 11: Draft-first capture, feedback, and consolidation 與 Draft commands create filesystem drafts：`wiki draft telegram` 與 `wiki draft discord` 以 local input 產生 reviewable filesystem draft；以 Node built-in test 驗證 draft shape。
+- [ ] 11.2 實作 Draft commands create filesystem drafts 的 feedback / consolidation draft：`wiki draft feedback` 與 `wiki draft consolidate` 產生含 provenance、source refs 與 intended target 的 filesystem draft；以 Node built-in test 驗證。
+- [ ] 11.3 確認 Phase 11: Draft-first capture, feedback, and consolidation 不新增 `wiki consolidate`，且不寫 Joplin、raw cache、compiled pages、graph、Error Book 或 status；以 Node built-in test 驗證。
 
-## 12. Phase 12: Consolidation command
+## 12. Phase 12: Approve-gated Joplin writeback
 
-- [ ] 12.1 實作 Phase 12: Consolidation command 與 Consolidate creates filesystem drafts：新增 `wiki consolidate <ref...>`，從 explicit source-backed refs 產生 kind `consolidation` 的 filesystem draft；以 Node built-in test 驗證 source refs、target、body、provenance、status、created timestamp。
-- [ ] 12.2 實作 Consolidate creates filesystem drafts 的 explicit refs boundary：`wiki consolidate` 沒有 refs 時回 stable JSON error `CONSOLIDATE_REFS_REQUIRED`；以 Node built-in test 驗證。
-- [ ] 12.3 確認 Phase 12: Consolidation command 不寫 Joplin、raw cache、compiled pages、graph、Error Book 或 status；以 Node built-in test 驗證。
+- [ ] 12.1 實作 Phase 12: Approve-gated Joplin writeback 與 Approve gates Joplin writeback：`wiki approve <draft-id>` 只在 draft 有 provenance、target notebook、conflict behavior 時透過 Joplin Data API 寫回；以 Node built-in test 驗證 success output 包含 Joplin note id。
+- [ ] 12.2 實作 Approve gates Joplin writeback 的 failure behavior：Joplin writeback 失敗時回 stable JSON error，且保留 local draft 與 provenance；以 Node built-in test 驗證。
+- [ ] 12.3 確認 Safety boundary for local reads and durable writes：除 `wiki approve <draft-id>` 外，`wiki sync`、`wiki compile`、`wiki query`、`wiki read`、`wiki links`、`wiki audit`、`wiki draft` 都不寫 Joplin notes；以 Node built-in test 與 code review 驗證。
 
-## 13. Phase 13: Draft-first capture and feedback
+## 13. Verification
 
-- [ ] 13.1 實作 Phase 13: Draft-first capture and feedback 與 Draft commands create filesystem drafts：`wiki draft telegram` 與 `wiki draft discord` 以 local input 產生 reviewable filesystem draft；以 Node built-in test 驗證 draft shape。
-- [ ] 13.2 實作 Draft commands create filesystem drafts 的 feedback draft：`wiki draft feedback` 產生含 provenance 與 intended target 的 filesystem draft；以 Node built-in test 驗證。
-- [ ] 13.3 確認 Phase 13: Draft-first capture and feedback 不寫 Joplin、raw cache、compiled pages、graph、Error Book 或 status；以 Node built-in test 驗證。
-
-## 14. Phase 14: Approve-gated Joplin writeback
-
-- [ ] 14.1 實作 Phase 14: Approve-gated Joplin writeback 與 Approve gates Joplin writeback：`wiki approve <draft-id>` 只在 draft 有 provenance、target notebook、conflict behavior 時透過 Joplin Data API 寫回；以 Node built-in test 驗證 success output 包含 Joplin note id。
-- [ ] 14.2 實作 Approve gates Joplin writeback 的 failure behavior：Joplin writeback 失敗時回 stable JSON error，且保留 local draft 與 provenance；以 Node built-in test 驗證。
-- [ ] 14.3 確認 Safety boundary for local reads and durable writes：除 `wiki approve <draft-id>` 外，`wiki sync`、`wiki compile`、`wiki query`、`wiki read`、`wiki links`、`wiki ask`、`wiki synthesize`、`wiki audit`、`wiki error-book`、`wiki consolidate`、`wiki draft` 都不寫 Joplin notes；以 Node built-in test 與 code review 驗證。
-
-## 15. Verification
-
-- [ ] 15.1 執行 `npm test`，確認 sync pagination、malformed note、query ranking、read by id、graph artifact、links traversal、evidence sufficiency、source-backed pages、`wiki synthesize`、page-aware refs、`wiki ask`、Error Book、`wiki error-book`、`wiki consolidate`、drafts、approve-gated writeback 全部通過。
-- [ ] 15.2 執行 manual smoke：`node src/wiki.js sync` safe failure、fixture `compile`、fixture `query`、fixture `read`、fixture `links`、fixture `synthesize`、fixture `ask`、fixture `audit`、fixture `error-book`、fixture `consolidate`、fixture `draft`、fixture `approve`，確認輸出為 user-safe JSON。
-- [ ] 15.3 執行 `spectra validate --all` 與 `spectra analyze strengthen-wiki-read-path --json`，確認 artifacts 沒有 critical findings。
-- [ ] 15.4 檢查 `git status --short`，確認沒有 runtime cache、secret、vector DB 或本機 generated state 進版控。
+- [ ] 13.1 執行 `npm test`，確認 sync pagination、malformed note、query ranking、read by id、graph artifact、links traversal、evidence sufficiency、source-backed pages、page-aware refs、Error Book artifact、drafts、approve-gated writeback 全部通過。
+- [ ] 13.2 執行 manual smoke：`node src/wiki.js sync` safe failure、fixture `compile`、fixture `query`、fixture `read`、fixture `links`、fixture `audit`、fixture `draft`、fixture `approve`，確認輸出為 user-safe JSON。
+- [ ] 13.3 執行 `spectra validate --all` 與 `spectra analyze strengthen-wiki-read-path --json`，確認 artifacts 沒有 critical findings。
+- [ ] 13.4 檢查 `git status --short`，確認沒有 runtime cache、secret、vector DB 或本機 generated state 進版控。

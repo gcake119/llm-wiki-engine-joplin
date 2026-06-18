@@ -4,7 +4,7 @@
 
 先前 RAG 是硬體限制下的務實取捨：本機設備不夠跑穩定 LLM 時，用 retrieval layer 減少模型負擔。接 Hermes 後，目標改成 LLM Wiki tool-use：Hermes 透過 deterministic local tools 查、讀、沿 links 探索 Joplin 長期知識，而不是把這個 repo 做成 RAG framework。
 
-成熟領域上，這是 agent-native knowledge system / retrieval-as-reasoning：ingestion completeness、normalization、lexical ranking、source attribution、link graph、wiki page compilation、audit loop、human-approved writeback。主流做法不是把 chunks 塞進 hidden retriever，而是把知識整理成可搜尋、可閱讀、可沿連結探索、可審核修正的 artifact。本 change 的完整方向是 LLM Wiki；落地順序仍維持 stdlib first，先把 deterministic read tools 做穩，再進入 source-backed synthesis 與 self-evolving loop。
+成熟領域上，這是 agent-native knowledge system / retrieval-as-reasoning：ingestion completeness、normalization、lexical ranking、source attribution、link graph、wiki page compilation、audit loop、human-approved writeback。主流做法不是把 chunks 塞進 hidden retriever，而是把知識整理成可搜尋、可閱讀、可沿連結探索、可審核修正的 artifact。本 change 的完整方向是 LLM-Wiki；command surface 只保留 agent 真正需要的 primitive tools，page synthesis、consolidation、Error Book 先作為 compile / draft / audit 的內部 artifact。
 
 ## Goals / Non-Goals
 
@@ -19,13 +19,10 @@
 - 讓 `wiki links <note-id>` 能從本機 graph artifact 回傳鄰接 note / notebook links。
 - 讓 `wiki query`、`wiki read`、`wiki links` 回傳 deterministic evidence sufficiency metadata。
 - 讓 read path 對 Hermes 保持 wiki tool-use 形狀，不建立 RAG / vector retrieval 預設架構。
-- 定義 source-backed wiki page model，讓 compiled wiki 可從 source notes 演進成 topic/entity pages。
-- 讓 `wiki synthesize <ref...>` 產生 source-backed page draft，並讓 `wiki compile` 產生最小 page artifacts 與 page index。
-- 讓 `wiki query`、`wiki read`、`wiki links` 同時支援 page refs 與 source note refs。
-- 讓 `wiki ask` 成為可選 local answer orchestration，只組合 search/read/links/evidence primitives。
-- 讓 `wiki audit` / Error Book 記錄 deterministic structural errors、missing links、unsupported claims 與 evidence gaps。
-- 讓 `wiki error-book` 可讀取／管理 Error Book entries。
-- 讓 `wiki consolidate <ref...>`、Telegram、Discord、feedback 只產生 filesystem drafts。
+- 定義 source-backed wiki page model，讓 `wiki compile` 可從 source notes 產生 topic/entity page artifacts。
+- 讓 `wiki query`、`wiki read`、`wiki links` 可使用同一套 refs 讀 source note 或 compiled page。
+- 讓 Error Book 保持為 local audit artifact，不暴露 `wiki error-book` top-level command。
+- 讓 Telegram、Discord、feedback、consolidation 都只透過 `wiki draft ...` 產生 filesystem drafts。
 - 讓 `wiki approve <draft-id>` 成為唯一 Joplin writeback 入口，並要求 provenance、conflict check 與 explicit approval。
 
 **Non-Goals:**
@@ -34,7 +31,8 @@
 - 不引入 RAG layer、embedding、vector DB、LLM summary、OCR 或 graph 推理。
 - 不讓 page synthesis、capture、feedback 或 consolidation 直接寫回 Joplin。
 - 不讓 Telegram / Discord capture 繞過 filesystem draft 與人工 approve。
-- 不讓 foreground `wiki query`、`wiki read`、`wiki links`、`wiki ask` 呼叫 Joplin Data API、embedding service、vector DB 或外部 retrieval API。
+- 不新增 `wiki ask`、`wiki synthesize`、`wiki consolidate`、`wiki error-book` top-level commands。
+- 不讓 foreground `wiki query`、`wiki read`、`wiki links` 呼叫 Joplin Data API、embedding service、vector DB 或外部 retrieval API。
 - 不新增 daemon、queue、HTTP server 或 LaunchDaemon。
 
 ## Decisions
@@ -87,9 +85,9 @@ Compiled wiki pages SHALL be source-backed artifacts, not free-form summaries. A
 
 Alternative considered: keep only normalized Joplin notes forever. That is simpler, but it does not fully match LLM Wiki semantics because agents need stable topic/entity pages to browse and traverse.
 
-### Phase 8: Source-backed synthesis command
+### Phase 8: Source-backed page artifacts through compile
 
-`wiki synthesize <ref...>` SHALL create a reviewable source-backed page draft from explicit local refs. It SHALL preserve source references and SHALL NOT write to Joplin. `wiki compile` SHALL then build local page artifacts and page index from accepted local page artifacts.
+`wiki compile` SHALL build local source-backed page artifacts and page index from raw cache / compiled notes. It SHALL NOT expose a separate `wiki synthesize` command in this change.
 
 Alternative considered: create pages during `wiki query`. That hides write-like work inside a foreground read command and makes cache state unpredictable.
 
@@ -97,35 +95,23 @@ Alternative considered: create pages during `wiki query`. That hides write-like 
 
 `wiki query`, `wiki read`, and `wiki links` SHALL use stable refs for both source notes and compiled pages. `wiki query` finds candidates, `wiki read` reads one ref, and `wiki links` follows local graph relationships; none of these commands SHALL answer the user directly.
 
-Alternative considered: add `wiki ask` now. That would collapse search, reading, traversal, and answer generation into one tool before the wiki surface is testable.
+Alternative considered: add `wiki ask`. That would collapse search, reading, traversal, and answer generation into one tool before the wiki surface is testable; Hermes should orchestrate the primitive tools.
 
-### Phase 10: Optional ask orchestration
-
-`wiki ask` SHALL be an optional local orchestration command that composes `query`, `read`, `links`, and evidence sufficiency into an answer-shaped JSON response. It SHALL require source-backed citations and SHALL NOT become the only way Hermes can use the wiki.
-
-Alternative considered: skip `wiki ask` entirely and force Hermes to orchestrate every query. That remains valid for early phases, but a thin local smoke-testable orchestration command is useful once the primitive tools are stable.
-
-### Phase 11: Deterministic audit and error-book command
+### Phase 10: Local audit artifact
 
 `wiki audit` SHALL run deterministic checks over local artifacts and write Error Book entries for structural failures such as dangling links, missing source references, unsupported page claims, stale compiled artifacts, and evidence gaps. It SHALL NOT use LLM grading in this change.
 
-`wiki error-book` SHALL read and manage local Error Book entries. The initial operation set is list, show, and close; it SHALL NOT repair pages or write Joplin.
+Error Book SHALL remain a local artifact produced by `wiki audit`, not a separate `wiki error-book` command surface.
 
 Alternative considered: start with LLM fact-checking. That is more powerful but creates a second model-dependent path before structural correctness is stable.
 
-### Phase 12: Consolidation command
+### Phase 11: Draft-first capture, feedback, and consolidation
 
-`wiki consolidate <ref...>` SHALL create a filesystem consolidation draft from explicit source-backed refs. Consolidation is memory curation, not durable memory mutation; writeback still requires `wiki approve <draft-id>`.
+Telegram capture, Discord capture, feedback, and consolidation SHALL enter the system only through `wiki draft ...` filesystem drafts. Drafts are reviewable proposals with provenance and intended target, not long-term memory.
 
-Alternative considered: make consolidation part of `wiki synthesize`. Keeping it separate avoids mixing page construction with long-term memory curation.
+Alternative considered: add `wiki consolidate <ref...>`. That adds another top-level command without improving the LLM-Wiki primitive tool loop; `wiki draft consolidate` is enough.
 
-### Phase 13: Draft-first capture and feedback
-
-Telegram capture, Discord capture, and user feedback SHALL enter the system only as filesystem drafts. Drafts are reviewable proposals with provenance and intended target, not long-term memory.
-
-Alternative considered: write capture directly into Joplin inbox. That is faster but makes accidental long-term memory pollution likely.
-
-### Phase 14: Approve-gated Joplin writeback
+### Phase 12: Approve-gated Joplin writeback
 
 `wiki approve <draft-id>` SHALL be the only command allowed to write to Joplin. Approval SHALL require draft provenance, target notebook, conflict behavior, and an explicit operator action.
 
@@ -312,43 +298,19 @@ Scope boundaries:
 - In scope: minimal page JSON / Markdown artifacts with source references.
 - Out of scope: unsourced summaries, ontology, graph inference, cloud LLM calls.
 
-### Phase 8: Source-backed synthesis command
+### Phase 8: Source-backed page artifacts through compile
 
 Observable behavior:
 
-- `wiki synthesize <ref...>` reads explicit `note:<id>` / `page:<id>` refs and writes a filesystem page draft.
-- The draft includes proposed page metadata, sections, source refs, provenance, and `status: "draft"`.
-- `wiki compile` can write `compiled/pages.json` and local page files from accepted local page artifacts in addition to note and graph artifacts.
-- `wiki synthesize` and `wiki compile` do not write Joplin.
-
-Data shape additions:
-
-```json
-{
-  "draft_id": "draft-page-local-retrieval",
-  "kind": "synthesized_page",
-  "target": "page:local-retrieval",
-  "body": {
-    "title": "Local retrieval",
-    "sections": [
-      {
-        "heading": "Command semantics",
-        "text": "wiki query finds candidates; wiki read loads source-backed content.",
-        "sources": ["note:a"]
-      }
-    ]
-  },
-  "provenance": {
-    "refs": ["note:a", "note:b"]
-  },
-  "status": "draft"
-}
-```
+- `wiki compile` can write `compiled/pages.json` and local page files in addition to note and graph artifacts.
+- Page artifacts are rebuilt from raw cache and compiled source notes.
+- Unsupported page sections are omitted or represented as audit evidence gaps.
+- `wiki compile` does not write Joplin, drafts, or foreground query state.
 
 Scope boundaries:
 
-- In scope: explicit-ref source-backed page draft creation and local page compilation.
-- Out of scope: direct writeback, hidden source selection, capture ingestion, answer generation, daemonized incremental compile.
+- In scope: local source-backed page compilation.
+- Out of scope: `wiki synthesize`, direct writeback, capture ingestion, answer generation, daemonized incremental compile.
 
 ### Phase 9: Page-aware traversal semantics
 
@@ -365,38 +327,7 @@ Scope boundaries:
 - In scope: explicit ref semantics and page-aware local traversal.
 - Out of scope: `wiki ask`, hidden retrieval, automatic multi-hop planning inside the engine.
 
-### Phase 10: Optional ask orchestration
-
-Observable behavior:
-
-- `wiki ask "question"` returns an answer-shaped JSON object with local citations.
-- The command composes local query/read/links behavior and respects evidence sufficiency.
-- If evidence is insufficient, it returns `ok: false` with `evidence_status: "insufficient"` instead of inventing an answer.
-- The command does not write local artifacts, Joplin notes, drafts, or Error Book entries.
-
-Data shape additions:
-
-```json
-{
-  "ok": true,
-  "answer": "wiki query finds candidates; wiki read loads source-backed content.",
-  "citations": [
-    {
-      "ref": "note:a",
-      "title": "Local retrieval",
-      "snippet": "wiki query finds candidates"
-    }
-  ],
-  "evidence_status": "source_backed"
-}
-```
-
-Scope boundaries:
-
-- In scope: thin local orchestration for smoke testing and command bridge ergonomics.
-- Out of scope: cloud LLM calls, embedding retrieval, durable memory writes, making `wiki ask` the only supported Hermes path.
-
-### Phase 11: Deterministic audit and error-book command
+### Phase 10: Local audit artifact
 
 Observable behavior:
 
@@ -404,9 +335,6 @@ Observable behavior:
 - Error Book entries include `id`, `kind`, `ref`, `message`, `sources`, `status`, and `created_at`.
 - Initial `kind` values include `dangling_link`, `missing_source`, `unsupported_claim`, `stale_artifact`, and `evidence_gap`.
 - `wiki audit` returns counts by kind and never mutates Joplin.
-- `wiki error-book list` returns open Error Book entries.
-- `wiki error-book show <entry-id>` returns one local Error Book entry.
-- `wiki error-book close <entry-id>` marks one entry closed with local metadata only.
 
 Data shape additions:
 
@@ -425,35 +353,22 @@ Data shape additions:
 Scope boundaries:
 
 - In scope: deterministic structural and source-grounding checks.
-- Out of scope: LLM fact grading, contradiction detection, automatic repair.
+- Out of scope: `wiki error-book`, LLM fact grading, contradiction detection, automatic repair.
 
-### Phase 12: Consolidation command
-
-Observable behavior:
-
-- `wiki consolidate <ref...>` writes a filesystem consolidation draft from explicit refs.
-- The draft includes `draft_id`, `kind: "consolidation"`, `source`, `target`, `body`, `provenance`, `status`, and `created_at`.
-- The command does not write Joplin, raw cache, compiled artifacts, graph, Error Book, or status.
-
-Scope boundaries:
-
-- In scope: reviewable consolidation draft from explicit local refs.
-- Out of scope: automatic approval, direct Joplin writeback, hidden source discovery, background consolidation.
-
-### Phase 13: Draft-first capture and feedback
+### Phase 11: Draft-first capture, feedback, and consolidation
 
 Observable behavior:
 
-- `wiki draft telegram`, `wiki draft discord`, and `wiki draft feedback` write reviewable filesystem drafts only.
+- `wiki draft telegram`, `wiki draft discord`, `wiki draft feedback`, and `wiki draft consolidate` write reviewable filesystem drafts only.
 - Drafts include `draft_id`, `kind`, `source`, `target`, `body`, `provenance`, `status`, and `created_at`.
 - Draft commands do not write raw cache, compiled artifacts, graph, Error Book, status, or Joplin notes.
 
 Scope boundaries:
 
 - In scope: filesystem draft creation with provenance.
-- Out of scope: automatic approval, automatic Joplin writeback, background capture listeners.
+- Out of scope: `wiki consolidate`, automatic approval, automatic Joplin writeback, background capture listeners.
 
-### Phase 14: Approve-gated Joplin writeback
+### Phase 12: Approve-gated Joplin writeback
 
 Observable behavior:
 
@@ -490,12 +405,11 @@ Observable behavior:
 2. Improve query scoring and source metadata after compiled notes remain stable.
 3. Add minimal graph generation from compiled artifacts.
 4. Add read, links, and evidence sufficiency so Hermes can traverse source notes.
-5. Add source-backed page model, `wiki synthesize`, and page-aware traversal.
-6. Add optional `wiki ask` orchestration after primitive tools are stable.
-7. Add deterministic audit and `wiki error-book`.
-8. Add `wiki consolidate` and draft-first capture / feedback.
-9. Add approve-gated Joplin writeback.
-10. Re-run `npm test`, CLI smoke, and `spectra validate --all`.
+5. Add source-backed page model and page-aware traversal.
+6. Add deterministic audit / Error Book as local artifact.
+7. Add draft-first capture, feedback, and consolidation through `wiki draft ...`.
+8. Add approve-gated Joplin writeback.
+9. Re-run `npm test`, CLI smoke, and `spectra validate --all`.
 
 Rollback: revert this change; raw cache and compiled artifacts are rebuildable generated state, not Joplin SSOT.
 
