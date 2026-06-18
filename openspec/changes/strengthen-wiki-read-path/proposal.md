@@ -16,11 +16,13 @@
   - Phase 5：新增 `wiki links <note-id>`，讓 Hermes 能從 graph artifact 做最小 link traversal。
   - Phase 6：為 `wiki query` / `wiki read` / `wiki links` 補上 evidence sufficiency protocol，讓 agent 能判斷目前回傳是否 source-backed、insufficient 或 graph-missing。
   - Phase 7：定義 source-backed wiki page model，讓 compiled wiki 從 normalized notes 逐步演進成 topic/entity pages，但每個 page 都必須保留 source note references。
-  - Phase 8：讓 `wiki compile` 可以產生最小 synthesized page artifacts 與 page index；仍不直接寫 Joplin。
+  - Phase 8：新增 `wiki synthesize <ref...>`，讓 operator 可從已讀 source notes / pages 產生 source-backed page draft；`wiki compile` 再把 approved local page artifacts 編進 page index。
   - Phase 9：讓 `wiki query` / `wiki read` / `wiki links` 支援 page 與 source note 兩種 reference，形成 Hermes 可組合的 wiki traversal 語意。
-  - Phase 10：加入 deterministic `wiki audit` / Error Book，先記 structural errors、missing links、unsupported page claims 與 evidence gaps。
-  - Phase 11：把 Telegram / Discord / feedback / consolidation 都收斂成 `wiki draft ...` filesystem drafts。
-  - Phase 12：讓 `wiki approve <draft-id>` 成為唯一 Joplin writeback 入口，並要求 provenance、conflict check 與 explicit approval。
+  - Phase 10：新增 `wiki ask`，作為可選 answer orchestration；它只能呼叫本機 search/read/links/evidence primitives，不取代 Hermes 推理，也不寫入任何 artifact。
+  - Phase 11：加入 deterministic `wiki audit` / Error Book，並新增 `wiki error-book` 讀取／管理 Error Book entries。
+  - Phase 12：新增 `wiki consolidate <ref...>`，把多個 source-backed refs 整理成 filesystem consolidation draft，不直接寫 Joplin。
+  - Phase 13：把 Telegram / Discord / feedback capture 都收斂成 `wiki draft ...` filesystem drafts。
+  - Phase 14：讓 `wiki approve <draft-id>` 成為唯一 Joplin writeback 入口，並要求 provenance、conflict check 與 explicit approval。
 - 保持 Node stdlib first，不新增 dependency。
 - 保持 foreground `wiki query` / `wiki read` / `wiki links` 只讀本機 compiled artifacts，不呼叫 Joplin Data API。
 - 保持 Hermes 使用本機 wiki tools；RAG / vector retrieval 不作為本 repo 的預設架構。
@@ -30,7 +32,7 @@
 - 不新增 RAG layer、embedding、vector DB、LLM summary、OCR 或 graph 推理。
 - 不讓未審核的 page synthesis、capture、feedback 或 consolidation 直接寫回 Joplin。
 - 不讓 Telegram / Discord capture 繞過 filesystem draft 與人工 approve。
-- 不讓 `wiki query` / `wiki read` / `wiki links` 在 foreground 呼叫 Joplin、LLM、embedding service 或外部 API。
+- 不讓 `wiki query` / `wiki read` / `wiki links` / `wiki ask` 在 foreground 呼叫 Joplin、embedding service、vector DB 或外部 retrieval API。
 - 不新增 daemon、queue、HTTP server 或 LaunchDaemon。
 
 ## Capabilities

@@ -213,6 +213,29 @@ The Hermes Wiki Engine SHALL compile source-backed topic or entity wiki page art
 - **THEN** the command writes only local artifacts
 - **AND** it does not write synthesized pages to Joplin
 
+### Requirement: Synthesize creates source-backed page drafts
+
+The Hermes Wiki Engine SHALL expose `wiki synthesize <ref...>` to create reviewable source-backed page drafts from explicit local refs.
+
+#### Scenario: Synthesize writes a page draft
+
+- **GIVEN** local refs `note:note-a` and `note:note-b` exist
+- **WHEN** the operator runs `wiki synthesize note:note-a note:note-b`
+- **THEN** the command writes a filesystem draft with kind `synthesized_page`
+- **AND** the draft includes target page metadata, proposed sections, provenance refs, source refs, and `status: "draft"`
+
+#### Scenario: Synthesize requires explicit local refs
+
+- **WHEN** the operator runs `wiki synthesize` without refs
+- **THEN** the command returns JSON with `ok` set to `false`
+- **AND** the response contains stable code `SYNTHESIZE_REFS_REQUIRED`
+
+#### Scenario: Synthesize does not write Joplin
+
+- **WHEN** `wiki synthesize <ref...>` completes
+- **THEN** the command writes only local draft output
+- **AND** it does not write Joplin notes, raw cache, compiled pages, graph, or Error Book entries
+
 ### Requirement: Read path supports page-aware refs
 
 The Hermes Wiki Engine SHALL use explicit local refs so Hermes can distinguish source notes from compiled wiki pages during search, read, and link traversal.
@@ -235,6 +258,29 @@ The Hermes Wiki Engine SHALL use explicit local refs so Hermes can distinguish s
 - **WHEN** the operator runs `wiki links note:note-a` or `wiki links page:local-retrieval`
 - **THEN** the command returns one-hop local graph relationships for that ref
 
+### Requirement: Ask composes local wiki evidence
+
+The Hermes Wiki Engine SHALL expose `wiki ask` as an optional local orchestration command over query, read, links, and evidence sufficiency primitives.
+
+#### Scenario: Ask returns a cited answer when evidence is sufficient
+
+- **WHEN** `wiki ask "How does local retrieval work?"` finds source-backed local evidence
+- **THEN** the command returns JSON with `ok` set to `true`
+- **AND** the response includes an answer, citations with local refs, and `evidence_status: "source_backed"`
+
+#### Scenario: Ask refuses when evidence is insufficient
+
+- **WHEN** `wiki ask "missing topic"` cannot find sufficient local evidence
+- **THEN** the command returns JSON with `ok` set to `false`
+- **AND** the response contains `evidence_status: "insufficient"`
+- **AND** it does not invent an answer
+
+#### Scenario: Ask remains local and non-mutating
+
+- **WHEN** `wiki ask "example"` runs
+- **THEN** the command does not write local artifacts, drafts, Error Book entries, or Joplin notes
+- **AND** it does not call Joplin Data API, an embedding service, a vector database, or an external retrieval API
+
 ### Requirement: Audit writes deterministic Error Book entries
 
 The Hermes Wiki Engine SHALL expose `wiki audit` to record deterministic local artifact errors in an Error Book without using LLM grading.
@@ -255,9 +301,53 @@ The Hermes Wiki Engine SHALL expose `wiki audit` to record deterministic local a
 - **THEN** it reads and writes only local audit artifacts
 - **AND** it does not write Joplin notes or call an LLM
 
+### Requirement: Error Book command manages audit entries
+
+The Hermes Wiki Engine SHALL expose `wiki error-book` for local inspection and status management of Error Book entries.
+
+#### Scenario: Error Book list returns open entries
+
+- **WHEN** the operator runs `wiki error-book list`
+- **THEN** the command returns local Error Book entries with `status: "open"`
+- **AND** it does not modify entries
+
+#### Scenario: Error Book show returns one entry
+
+- **WHEN** the operator runs `wiki error-book show err-001`
+- **THEN** the command returns the matching local Error Book entry
+- **AND** unknown entry ids return stable code `ERROR_BOOK_ENTRY_NOT_FOUND`
+
+#### Scenario: Error Book close marks one entry closed locally
+
+- **WHEN** the operator runs `wiki error-book close err-001`
+- **THEN** the command marks that local entry as closed
+- **AND** it does not repair pages or write Joplin notes
+
+### Requirement: Consolidate creates filesystem drafts
+
+The Hermes Wiki Engine SHALL expose `wiki consolidate <ref...>` to create reviewable consolidation drafts from explicit source-backed local refs.
+
+#### Scenario: Consolidate writes a reviewable draft
+
+- **GIVEN** local refs `note:note-a` and `page:local-retrieval` exist
+- **WHEN** the operator runs `wiki consolidate note:note-a page:local-retrieval`
+- **THEN** the command writes a filesystem draft with kind `consolidation`
+- **AND** the draft includes source refs, target, body, provenance, status, and created timestamp
+
+#### Scenario: Consolidate requires explicit refs
+
+- **WHEN** the operator runs `wiki consolidate` without refs
+- **THEN** the command returns JSON with `ok` set to `false`
+- **AND** the response contains stable code `CONSOLIDATE_REFS_REQUIRED`
+
+#### Scenario: Consolidate does not write durable memory
+
+- **WHEN** `wiki consolidate <ref...>` completes
+- **THEN** it does not write Joplin notes, raw cache, compiled pages, graph, Error Book entries, or status
+
 ### Requirement: Draft commands create filesystem drafts
 
-The Hermes Wiki Engine SHALL route Telegram capture, Discord capture, feedback, and consolidation into reviewable filesystem drafts before any durable Joplin writeback.
+The Hermes Wiki Engine SHALL route Telegram capture, Discord capture, and feedback into reviewable filesystem drafts before any durable Joplin writeback.
 
 #### Scenario: Capture commands create reviewable drafts
 
@@ -265,9 +355,9 @@ The Hermes Wiki Engine SHALL route Telegram capture, Discord capture, feedback, 
 - **THEN** the command writes a filesystem draft with draft id, kind, source, target, body, provenance, status, and created timestamp
 - **AND** it does not write Joplin notes
 
-#### Scenario: Feedback and consolidation create reviewable drafts
+#### Scenario: Feedback creates a reviewable draft
 
-- **WHEN** an operator runs `wiki draft feedback` or `wiki draft consolidate`
+- **WHEN** an operator runs `wiki draft feedback`
 - **THEN** the command writes a filesystem draft with provenance and intended target
 - **AND** it does not write raw cache, compiled pages, graph, Error Book, or Joplin notes
 
@@ -290,5 +380,5 @@ The Hermes Wiki Engine SHALL make `wiki approve <draft-id>` the only command tha
 
 #### Scenario: Non-approve commands do not write Joplin
 
-- **WHEN** `wiki sync`, `wiki compile`, `wiki query`, `wiki read`, `wiki links`, `wiki audit`, or `wiki draft` runs
+- **WHEN** `wiki sync`, `wiki compile`, `wiki query`, `wiki read`, `wiki links`, `wiki ask`, `wiki synthesize`, `wiki audit`, `wiki error-book`, `wiki consolidate`, or `wiki draft` runs
 - **THEN** the command does not write Joplin notes
