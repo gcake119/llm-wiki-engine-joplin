@@ -1,4 +1,6 @@
 .agents/
 .spectra/
+.codebase-memory/
+docs/decisions/.decision-index.json
 docs/superpowers/plans/
 openspec/.vector-search.db*
