@@ -85,9 +85,9 @@ wiki links <ref>
 wiki audit
 wiki draft telegram ...
 wiki draft discord ...
-wiki draft consolidate --ref note:<id> ...
+wiki draft consolidate --target-notebook <notebook-id> --ref note:<id> ...
 wiki draft candidates --limit 10
-wiki draft candidate <candidate-id>
+wiki draft candidate <candidate-id> --target-notebook <notebook-id>
 wiki draft reject <draft-id>
 wiki approve <draft-id>
 ```
@@ -117,13 +117,15 @@ preflight
 
 全筆記庫整理拆成三個 explicit phases：
 
-1. Phase 1: `wiki draft consolidate --ref ...` 針對 operator 指定 refs 建立 deterministic extractive draft。內容保留 goal、source refs、source titles、bounded excerpts。
-2. Phase 2: `wiki draft candidates --limit N` 只讀 compiled artifacts，產生 bounded candidate list；`wiki draft candidate <candidate-id>` 把選定候選轉成 reviewable consolidation draft。
+1. Phase 1: `wiki draft consolidate --target-notebook ... --ref ...` 針對 operator 指定 refs 建立 deterministic extractive draft。內容保留 goal、source refs、source titles、bounded excerpts；若提供 target notebook，draft 會保存到 `intended_target.notebook_id`，但不寫回 Joplin。
+2. Phase 2: `wiki draft candidates --limit N` 只讀 compiled artifacts，產生 bounded candidate list；候選使用 deterministic multi-signal scoring，包含 `reasons`、`score`、`priority`、`refs`、`goal`、`status`、`proposed_target`。目前 signals 包含 title prefix、same parent notebook、markdown links、shared page sources、recent update cluster。`wiki draft candidate <candidate-id>` 把選定候選轉成 reviewable consolidation draft。
 3. Phase 3: local review artifacts 追蹤 pending、approved、rejected 與 rollback evidence；`wiki draft reject <draft-id>` 記錄 rejected evidence，`wiki approve <draft-id>` 成功後記錄 approved evidence 與 Joplin note id。
 
 這個分期不承諾 LLM 摘要、embedding retrieval、語意去重或背景排程。候選探索先用 deterministic local heuristics，讓 operator 可以控制批次與審核負擔。
 
-`wiki audit` 是本機 governance 檢查。它檢查 dangling link、missing source、evidence gap、consolidation draft 缺 target 等 deterministic 問題，也讀取 local review artifacts 輸出 pending、approved、rejected 統計；不做 semantic grading，也不呼叫 LLM。
+`wiki compile` 產生 source-backed topic/entity pages。單一 note 仍會保留相容的薄 page；同一 deterministic topic 與 parent context 下的多篇 notes 會聚合成 grouped page。page summary 與 sections 只使用 bounded source excerpts，每個 fact-bearing section 都保留 source note refs，不產生 unsupported facts。
+
+`wiki audit` 是本機 governance 檢查。它檢查 dangling link、missing source、evidence gap、candidate refs 太少、consolidation draft 缺 target 等 deterministic 問題，也讀取 local review artifacts 輸出 pending、approved、rejected 統計；不做 semantic grading，也不呼叫 LLM。
 
 ## Background Job Model
 
@@ -201,6 +203,7 @@ wiki draft consolidate --ref note:note-a --ref page:page-topic "整理內容"
   -> drafts/<draft-id>.json
   -> status: pending_review
   -> provenance.refs: ["note:note-a", "page:page-topic"]
+  -> intended_target.notebook_id: "" 或 operator 指定 notebook
   -> intended_target.conflict_behavior: manual_review
 ```
 
@@ -209,12 +212,13 @@ Full-library candidate flow 仍使用同一個 review gate：
 ```text
 wiki draft candidates --limit 10
   -> candidates/consolidation-candidates.json
-  -> candidate_id、refs、reason、priority、goal、status
+  -> candidate_id、refs、reasons、score、priority、goal、status、proposed_target
 
-wiki draft candidate <candidate-id>
+wiki draft candidate <candidate-id> --target-notebook <notebook-id>
   -> drafts/<draft-id>.json
   -> kind: consolidate
   -> provenance.candidate_id
+  -> intended_target.notebook_id
   -> review/consolidation-reviews.json decision: pending
 
 wiki draft reject <draft-id>

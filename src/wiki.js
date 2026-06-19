@@ -201,26 +201,55 @@ function wikiSchema() {
 }
 
 function sourceBackedPages(notes) {
-  return notes.map((note) => {
-    const text = note.plain_text || "";
-    const sections = text ? [
-      {
-        heading: "Source note",
-        text,
+  const groups = new Map();
+  for (const note of notes) {
+    const topic = candidateTopic(note.title) || note.id;
+    const groupKey = `${note.parent_id || ""}\n${topic}`;
+    const group = groups.get(groupKey) || { topic, notes: [] };
+    group.notes.push(note);
+    groups.set(groupKey, group);
+  }
+
+  return [...groups.values()].map(({ topic, notes: groupNotes }) => {
+    const firstNote = groupNotes[0] || {};
+    const text = groupNotes
+      .map((note) => note.plain_text || "")
+      .filter(Boolean)
+      .join(" ");
+    const sections = groupNotes
+      .filter((note) => (note.plain_text || "").trim())
+      .map((note) => ({
+        heading: groupNotes.length === 1 ? "Source note" : note.title || note.id,
+        text: note.plain_text || "",
         sources: [note.id],
-      },
-    ] : [];
+      }));
     return {
-      page_id: `page-${note.id}`,
-      title: note.title || note.id,
-      aliases: [],
+      page_id: groupNotes.length === 1 ? `page-${firstNote.id}` : `page-${safeSlug(topic)}`,
+      title: groupNotes.length === 1 ? (firstNote.title || firstNote.id) : titleFromTopic(topic),
+      aliases: groupNotes.length === 1 ? [] : groupNotes.map((note) => note.title || note.id),
       tags: [],
-      summary: text,
+      summary: boundedText(text, 500),
       sections,
       links: [],
-      sources: [note.id],
+      sources: groupNotes.map((note) => note.id),
     };
   });
+}
+
+function safeSlug(value) {
+  const slug = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return safeNoteId(slug || crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 12));
+}
+
+function titleFromTopic(value) {
+  return String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
 }
 
 function writePageFiles(stateDir, pages) {
@@ -677,6 +706,7 @@ export function audit({ env = process.env } = {}) {
   const notesPath = path.join(stateDir, "compiled", "notes.json");
   const pagesPath = path.join(stateDir, "compiled", "pages.json");
   const graphPath = path.join(stateDir, "graph", "graph.json");
+  const candidatesPath = path.join(stateDir, "candidates", "consolidation-candidates.json");
   const reviewPath = path.join(stateDir, "review", "consolidation-reviews.json");
   const entries = [];
 
@@ -745,6 +775,32 @@ export function audit({ env = process.env } = {}) {
     }
   }
 
+  const candidates = fs.existsSync(candidatesPath) ? readJson(candidatesPath).candidates || [] : [];
+  for (const candidate of candidates) {
+    if ((candidate.refs || []).length < 2) {
+      entries.push(auditEntry(
+        "candidate_too_small",
+        candidate.candidate_id || "unknown-candidate",
+        "Consolidation candidate has fewer than two source refs.",
+        "candidates/consolidation-candidates.json",
+      ));
+    }
+    for (const refValue of candidate.refs || []) {
+      const ref = parseRef(refValue);
+      const known =
+        (ref.kind === "note" && noteIds.has(ref.id)) ||
+        (ref.kind === "page" && pageIds.has(ref.id));
+      if (!known) {
+        entries.push(auditEntry(
+          "missing_source",
+          `${candidate.candidate_id || "unknown-candidate"}:${refValue}`,
+          "Consolidation candidate references a missing source ref.",
+          "candidates/consolidation-candidates.json",
+        ));
+      }
+    }
+  }
+
   for (const draftData of readDrafts(stateDir)) {
     if (draftData.kind !== "consolidate") continue;
     if (!draftData.intended_target?.notebook_id) {
@@ -800,15 +856,19 @@ const DRAFT_KINDS = new Set(["telegram", "discord", "feedback", "consolidate"]);
 function draftParts(rest) {
   const refs = [];
   const content = [];
+  let targetNotebook = "";
   for (let index = 0; index < rest.length; index += 1) {
     if (rest[index] === "--ref" && rest[index + 1]) {
       refs.push(rest[index + 1]);
+      index += 1;
+    } else if (rest[index] === "--target-notebook" && rest[index + 1]) {
+      targetNotebook = rest[index + 1];
       index += 1;
     } else {
       content.push(rest[index]);
     }
   }
-  return { refs, content: content.join(" ").trim() };
+  return { refs, targetNotebook, content: content.join(" ").trim() };
 }
 
 function validateDraftRefs(kind, refs) {
@@ -823,6 +883,16 @@ function validateDraftRefs(kind, refs) {
     } catch {
       return safeError("DRAFT_REF_UNSAFE", "Draft ref is not safe.");
     }
+  }
+  return null;
+}
+
+function validateTargetNotebook(targetNotebook) {
+  if (!targetNotebook) return null;
+  try {
+    safeNoteId(targetNotebook);
+  } catch {
+    return safeError("DRAFT_TARGET_UNSAFE", "Draft target notebook is not safe.");
   }
   return null;
 }
@@ -897,17 +967,49 @@ function candidateId(refs) {
     .slice(0, 12)}`;
 }
 
+function priorityForScore(score) {
+  if (score >= 4) return "high";
+  if (score >= 2) return "medium";
+  return "low";
+}
+
+function sameDay(valueA, valueB) {
+  if (!valueA || !valueB) return false;
+  return new Date(valueA).toISOString().slice(0, 10) === new Date(valueB).toISOString().slice(0, 10);
+}
+
+function graphLinked(refs, graph) {
+  const ids = new Set(refs.map((ref) => parseRef(ref).id));
+  return (graph.edges || []).some((edge) => (
+    edge.type === "markdown_link" &&
+    ids.has(edge.from) &&
+    ids.has(edge.to)
+  ));
+}
+
+function sharesPageSource(refs, pages) {
+  const ids = new Set(refs.map((ref) => parseRef(ref).id));
+  return (pages || []).some((page) => (
+    (page.sources || []).filter((sourceId) => ids.has(sourceId)).length > 1
+  ));
+}
+
 export function draftCandidates(rest = [], { env = process.env, now = () => new Date() } = {}) {
   const stateDir = defaultStateDir(env);
   const notesPath = path.join(stateDir, "compiled", "notes.json");
+  const pagesPath = path.join(stateDir, "compiled", "pages.json");
+  const graphPath = path.join(stateDir, "graph", "graph.json");
   if (!fs.existsSync(notesPath)) {
     return safeError("WIKI_COMPILED_INDEX_MISSING", "Run wiki compile before candidate discovery.");
   }
 
   const limitIndex = rest.indexOf("--limit");
   const limit = limitIndex >= 0 ? Math.max(0, Number.parseInt(rest[limitIndex + 1], 10) || 0) : 10;
+  const notes = readJson(notesPath).notes || [];
+  const pages = fs.existsSync(pagesPath) ? readJson(pagesPath).pages || [] : [];
+  const graph = fs.existsSync(graphPath) ? readJson(graphPath) : { edges: [] };
   const groups = new Map();
-  for (const note of readJson(notesPath).notes || []) {
+  for (const note of notes) {
     const topic = candidateTopic(note.title);
     if (!topic) continue;
     const group = groups.get(topic) || [];
@@ -916,20 +1018,42 @@ export function draftCandidates(rest = [], { env = process.env, now = () => new 
   }
 
   const candidates = [...groups.entries()]
-    .filter(([, notes]) => notes.length > 1)
-    .sort(([topicA], [topicB]) => topicA.localeCompare(topicB))
-    .slice(0, limit)
-    .map(([topic, notes]) => {
-      const refs = notes.map((note) => `note:${note.id}`);
+    .filter(([, groupNotes]) => groupNotes.length > 1)
+    .map(([topic, groupNotes]) => {
+      const refs = groupNotes.map((note) => `note:${note.id}`);
+      const reasons = ["title_prefix"];
+      if (groupNotes.every((note) => note.parent_id && note.parent_id === groupNotes[0].parent_id)) {
+        reasons.push("same_parent");
+      }
+      if (groupNotes.some((note, index) => index > 0 && sameDay(note.updated_time, groupNotes[0].updated_time))) {
+        reasons.push("recent_cluster");
+      }
+      if (graphLinked(refs, graph)) {
+        reasons.push("markdown_link");
+      }
+      if (sharesPageSource(refs, pages)) {
+        reasons.push("shared_page_source");
+      }
+      const score = reasons.length;
       return {
         candidate_id: candidateId(refs),
         refs,
-        reason: "related_title",
-        priority: "medium",
+        reasons,
+        score,
+        reason: reasons[0],
+        priority: priorityForScore(score),
         goal: `Consolidate ${topic} notes`,
         status: "pending_review",
+        proposed_target: {
+          type: "joplin_inbox",
+          notebook_id: groupNotes.every((note) => note.parent_id === groupNotes[0].parent_id)
+            ? groupNotes[0].parent_id || ""
+            : "",
+        },
       };
-    });
+    })
+    .sort((a, b) => b.score - a.score || a.candidate_id.localeCompare(b.candidate_id))
+    .slice(0, limit);
 
   const artifact = {
     created_at: now().toISOString(),
@@ -944,7 +1068,7 @@ export function draftCandidates(rest = [], { env = process.env, now = () => new 
   };
 }
 
-export function draftCandidate(candidateIdValue, { env = process.env, now = () => new Date() } = {}) {
+export function draftCandidate(candidateIdValue, rest = [], { env = process.env, now = () => new Date() } = {}) {
   let id;
   try {
     id = safeNoteId(candidateIdValue);
@@ -960,9 +1084,15 @@ export function draftCandidate(candidateIdValue, { env = process.env, now = () =
     return safeError("DRAFT_CANDIDATE_MISSING", "Candidate was not found.");
   }
 
+  const { targetNotebook } = draftParts(rest);
+  const target = targetNotebook || candidate.proposed_target?.notebook_id || "";
   const result = draft(
     "consolidate",
-    [...candidate.refs.flatMap((ref) => ["--ref", ref]), candidate.goal],
+    [
+      ...(target ? ["--target-notebook", target] : []),
+      ...candidate.refs.flatMap((ref) => ["--ref", ref]),
+      candidate.goal,
+    ],
     { env, now },
   );
   if (!result.ok) return result;
@@ -980,9 +1110,11 @@ export function draft(kind, rest = [], { env = process.env, now = () => new Date
     return safeError("DRAFT_KIND_UNSUPPORTED", "Draft kind is not supported.");
   }
 
-  const { refs, content } = draftParts(rest);
+  const { refs, targetNotebook, content } = draftParts(rest);
   const refError = validateDraftRefs(kind, refs);
   if (refError) return refError;
+  const targetError = validateTargetNotebook(targetNotebook);
+  if (targetError) return targetError;
   if (!content) {
     return safeError("DRAFT_CONTENT_MISSING", "Draft content is required.");
   }
@@ -1016,7 +1148,7 @@ export function draft(kind, rest = [], { env = process.env, now = () => new Date
     },
     intended_target: {
       type: "joplin_inbox",
-      notebook_id: "",
+      notebook_id: targetNotebook,
       conflict_behavior: "manual_review",
     },
   };
@@ -1286,7 +1418,7 @@ export async function run(argv, env = process.env, deps = {}) {
       return JSON.stringify(draftCandidates(rest.slice(1), { env, ...deps }), null, 2);
     }
     if (rest[0] === "candidate") {
-      return JSON.stringify(draftCandidate(rest[1], { env, ...deps }), null, 2);
+      return JSON.stringify(draftCandidate(rest[1], rest.slice(2), { env, ...deps }), null, 2);
     }
     if (rest[0] === "reject") {
       return JSON.stringify(rejectDraft(rest[1], { env, ...deps }), null, 2);
