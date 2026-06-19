@@ -1284,6 +1284,37 @@ test("draft creates reviewable filesystem drafts for telegram and discord", asyn
 
 test("draft creates feedback and consolidation drafts without durable writes", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-"));
+  fs.mkdirSync(path.join(stateDir, "compiled", "pages"), { recursive: true });
+  const notesJson = `${JSON.stringify({
+    notes: [
+      {
+        id: "note-a",
+        title: "Durable note",
+        parent_id: "folder-1",
+        updated_time: 123,
+        body_hash: "hash-a",
+        plain_text: "Durable source excerpt from a local compiled note.",
+      },
+    ],
+  })}\n`;
+  const pagesJson = `${JSON.stringify({
+    pages: [
+      {
+        page_id: "page-topic",
+        title: "Topic page",
+        summary: "Compiled page summary.",
+        sections: [],
+        links: [],
+        sources: ["note-a"],
+      },
+    ],
+  })}\n`;
+  fs.writeFileSync(path.join(stateDir, "compiled", "notes.json"), notesJson);
+  fs.writeFileSync(path.join(stateDir, "compiled", "pages.json"), pagesJson);
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "pages", "page-topic.json"),
+    pagesJson,
+  );
   const now = () => new Date("2026-06-18T03:10:00.000Z");
   const fetchImpl = async () => {
     throw new Error("draft consolidate must not call Joplin");
@@ -1326,16 +1357,78 @@ test("draft creates feedback and consolidation drafts without durable writes", a
   assert.deepEqual(feedbackDraft.provenance.refs, ["note:note-a"]);
   assert.equal(consolidateDraft.kind, "consolidate");
   assert.equal(consolidateDraft.status, "pending_review");
-  assert.equal(consolidateDraft.content, "Durable summary");
+  assert.match(consolidateDraft.content, /Durable summary/);
+  assert.match(consolidateDraft.content, /note:note-a/);
+  assert.match(consolidateDraft.content, /Durable source excerpt/);
+  assert.match(consolidateDraft.content, /page:page-topic/);
+  assert.match(consolidateDraft.content, /Compiled page summary/);
   assert.deepEqual(consolidateDraft.provenance.refs, [
     "note:note-a",
     "page:page-topic",
   ]);
   assert.equal(fs.existsSync(path.join(stateDir, "raw")), false);
-  assert.equal(fs.existsSync(path.join(stateDir, "compiled")), false);
+  assert.equal(fs.readFileSync(path.join(stateDir, "compiled", "notes.json"), "utf8"), notesJson);
+  assert.equal(fs.readFileSync(path.join(stateDir, "compiled", "pages.json"), "utf8"), pagesJson);
   assert.equal(fs.existsSync(path.join(stateDir, "graph")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "audit")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "status.json")), false);
+});
+
+test("draft consolidate builds content from compiled note sources", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-a",
+          title: "Keyboard DIY",
+          parent_id: "folder-1",
+          updated_time: 123,
+          body_hash: "hash-a",
+          plain_text:
+            "PBT keycaps resist shine. ABS keycaps become glossy after long use.",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["draft", "consolidate", "--ref", "note:note-a", "Keycap material note"],
+      { WIKI_STATE_DIR: stateDir },
+      { now: () => new Date("2026-06-18T03:20:00.000Z") },
+    ),
+  );
+  const draft = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "drafts", `${result.draft_id}.json`), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.match(draft.content, /Keycap material note/);
+  assert.match(draft.content, /note:note-a/);
+  assert.match(draft.content, /Keyboard DIY/);
+  assert.match(draft.content, /PBT keycaps resist shine/);
+  assert.ok(draft.content.length > "Keycap material note".length);
+  assert.deepEqual(draft.provenance.refs, ["note:note-a"]);
+});
+
+test("draft consolidate rejects missing compiled sources before writing drafts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, "compiled", "notes.json"), `${JSON.stringify({ notes: [] })}\n`);
+
+  const result = JSON.parse(
+    await run(
+      ["draft", "consolidate", "--ref", "note:missing-note", "Durable summary"],
+      { WIKI_STATE_DIR: stateDir },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "DRAFT_SOURCE_MISSING");
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
 });
 
 test("draft consolidate rejects unsafe refs before writing drafts", async () => {
@@ -1352,6 +1445,264 @@ test("draft consolidate rejects unsafe refs before writing drafts", async () => 
   assert.equal(result.code, "DRAFT_REF_UNSAFE");
   assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "secret.json")), false);
+});
+
+test("draft candidates returns bounded candidates from compiled notes", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-candidates-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "a",
+          title: "Keyboard DIY part 1",
+          parent_id: "folder-1",
+          updated_time: 100,
+          body_hash: "hash-a",
+          plain_text: "Switch notes.",
+        },
+        {
+          id: "b",
+          title: "Keyboard DIY part 2",
+          parent_id: "folder-1",
+          updated_time: 101,
+          body_hash: "hash-b",
+          plain_text: "Keycap notes.",
+        },
+        {
+          id: "c",
+          title: "Garden log",
+          parent_id: "folder-2",
+          updated_time: 102,
+          body_hash: "hash-c",
+          plain_text: "Unrelated.",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(["draft", "candidates", "--limit", "1"], { WIKI_STATE_DIR: stateDir }),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "candidates_found");
+  assert.equal(result.candidates.length, 1);
+  assert.deepEqual(Object.keys(result.candidates[0]), [
+    "candidate_id",
+    "refs",
+    "reason",
+    "priority",
+    "goal",
+    "status",
+  ]);
+  assert.deepEqual(result.candidates[0].refs, ["note:a", "note:b"]);
+  assert.equal(result.candidates[0].reason, "related_title");
+  assert.equal(result.candidates[0].priority, "medium");
+  assert.equal(result.candidates[0].goal, "Consolidate Keyboard DIY notes");
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("draft candidates fails without compiled artifacts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-candidates-"));
+
+  const result = JSON.parse(
+    await run(["draft", "candidates"], { WIKI_STATE_DIR: stateDir }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "WIKI_COMPILED_INDEX_MISSING");
+  assert.equal(fs.existsSync(path.join(stateDir, "candidates")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("draft candidate creates a review-gated consolidation draft", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-candidate-draft-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.mkdirSync(path.join(stateDir, "candidates"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "a",
+          title: "Keyboard DIY part 1",
+          parent_id: "folder-1",
+          updated_time: 100,
+          body_hash: "hash-a",
+          plain_text: "Switch notes.",
+        },
+        {
+          id: "b",
+          title: "Keyboard DIY part 2",
+          parent_id: "folder-1",
+          updated_time: 101,
+          body_hash: "hash-b",
+          plain_text: "Keycap notes.",
+        },
+      ],
+    })}\n`,
+  );
+  fs.writeFileSync(
+    path.join(stateDir, "candidates", "consolidation-candidates.json"),
+    `${JSON.stringify({
+      candidates: [
+        {
+          candidate_id: "candidate-a",
+          refs: ["note:a", "note:b"],
+          reason: "related_title",
+          priority: "medium",
+          goal: "Consolidate Keyboard DIY notes",
+          status: "pending_review",
+        },
+      ],
+    })}\n`,
+  );
+  const fetchImpl = async () => {
+    throw new Error("draft candidate must not call Joplin");
+  };
+
+  const result = JSON.parse(
+    await run(
+      ["draft", "candidate", "candidate-a"],
+      { WIKI_STATE_DIR: stateDir },
+      { fetchImpl, now: () => new Date("2026-06-18T03:30:00.000Z") },
+    ),
+  );
+  const draft = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "drafts", `${result.draft_id}.json`), "utf8"),
+  );
+  const reviewState = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "review", "consolidation-reviews.json"), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "drafted");
+  assert.equal(draft.kind, "consolidate");
+  assert.equal(draft.status, "pending_review");
+  assert.deepEqual(draft.provenance.refs, ["note:a", "note:b"]);
+  assert.equal(draft.provenance.candidate_id, "candidate-a");
+  assert.match(draft.content, /Consolidate Keyboard DIY notes/);
+  assert.match(draft.content, /Switch notes/);
+  assert.match(draft.content, /Keycap notes/);
+  assert.deepEqual(reviewState.reviews, [
+    {
+      candidate_id: "candidate-a",
+      draft_id: result.draft_id,
+      decision: "pending",
+      joplin_note_id: "",
+      decided_at: "2026-06-18T03:30:00.000Z",
+      rollback: {},
+    },
+  ]);
+});
+
+test("draft candidate rejects unknown candidates before writing drafts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-candidate-draft-"));
+  fs.mkdirSync(path.join(stateDir, "candidates"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "candidates", "consolidation-candidates.json"),
+    `${JSON.stringify({ candidates: [] })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(["draft", "candidate", "missing-candidate"], { WIKI_STATE_DIR: stateDir }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "DRAFT_CANDIDATE_MISSING");
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("candidate draft approval and rejection write local review evidence", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-review-"));
+  fs.mkdirSync(path.join(stateDir, "drafts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "drafts", "draft-approved.json"),
+    `${JSON.stringify({
+      draft_id: "draft-approved",
+      kind: "consolidate",
+      status: "pending_review",
+      created_at: "2026-06-18T03:00:00.000Z",
+      content: "# Approved candidate",
+      provenance: {
+        source: "consolidate",
+        input: "cli",
+        refs: ["note:a"],
+        candidate_id: "candidate-a",
+      },
+      intended_target: {
+        type: "joplin_inbox",
+        notebook_id: "folder-1",
+        conflict_behavior: "manual_review",
+      },
+    })}\n`,
+  );
+  fs.writeFileSync(
+    path.join(stateDir, "drafts", "draft-rejected.json"),
+    `${JSON.stringify({
+      draft_id: "draft-rejected",
+      kind: "consolidate",
+      status: "pending_review",
+      created_at: "2026-06-18T03:05:00.000Z",
+      content: "# Rejected candidate",
+      provenance: {
+        source: "consolidate",
+        input: "cli",
+        refs: ["note:b"],
+        candidate_id: "candidate-b",
+      },
+      intended_target: {
+        type: "joplin_inbox",
+        notebook_id: "folder-1",
+        conflict_behavior: "manual_review",
+      },
+    })}\n`,
+  );
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ id: "joplin-note-a" }),
+  });
+
+  const approved = JSON.parse(
+    await run(
+      ["approve", "draft-approved"],
+      { WIKI_STATE_DIR: stateDir, WIKI_JOPLIN_TOKEN: "token-value" },
+      { fetchImpl, now: () => new Date("2026-06-18T03:40:00.000Z") },
+    ),
+  );
+  const rejected = JSON.parse(
+    await run(
+      ["draft", "reject", "draft-rejected"],
+      { WIKI_STATE_DIR: stateDir },
+      { now: () => new Date("2026-06-18T03:41:00.000Z") },
+    ),
+  );
+  const reviewState = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "review", "consolidation-reviews.json"), "utf8"),
+  );
+
+  assert.equal(approved.ok, true);
+  assert.equal(rejected.ok, true);
+  assert.deepEqual(reviewState.reviews, [
+    {
+      candidate_id: "candidate-a",
+      draft_id: "draft-approved",
+      decision: "approved",
+      joplin_note_id: "joplin-note-a",
+      decided_at: "2026-06-18T03:40:00.000Z",
+      rollback: { joplin_note_id: "joplin-note-a" },
+    },
+    {
+      candidate_id: "candidate-b",
+      draft_id: "draft-rejected",
+      decision: "rejected",
+      joplin_note_id: "",
+      decided_at: "2026-06-18T03:41:00.000Z",
+      rollback: {},
+    },
+  ]);
 });
 
 test("audit reports consolidation draft governance errors", async () => {
@@ -1410,6 +1761,47 @@ test("audit reports consolidation draft governance errors", async () => {
       entry.ref === "draft-consolidate:page:page-missing"
     )),
   );
+});
+
+test("audit reports local review governance statistics", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-audit-"));
+  fs.mkdirSync(path.join(stateDir, "review"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "review", "consolidation-reviews.json"),
+    `${JSON.stringify({
+      reviews: [
+        {
+          candidate_id: "candidate-a",
+          draft_id: "draft-a",
+          decision: "pending",
+          joplin_note_id: "",
+          decided_at: "2026-06-18T03:30:00.000Z",
+        },
+        {
+          candidate_id: "candidate-b",
+          draft_id: "draft-b",
+          decision: "approved",
+          joplin_note_id: "joplin-note-b",
+          decided_at: "2026-06-18T03:40:00.000Z",
+        },
+        {
+          candidate_id: "candidate-c",
+          draft_id: "draft-c",
+          decision: "rejected",
+          joplin_note_id: "",
+          decided_at: "2026-06-18T03:41:00.000Z",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(await run(["audit"], { WIKI_STATE_DIR: stateDir }));
+
+  assert.deepEqual(result.review_counts, {
+    pending: 1,
+    approved: 1,
+    rejected: 1,
+  });
 });
 
 test("approve gates Joplin writeback on complete draft metadata", async () => {

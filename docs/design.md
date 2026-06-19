@@ -55,6 +55,10 @@ Existing local memory refs
     schema.json
   graph/
   drafts/
+  candidates/
+    consolidation-candidates.json
+  review/
+    consolidation-reviews.json
   audit/
 /Users/hermes/.config/hermes-knowledge/env
 ```
@@ -82,6 +86,9 @@ wiki audit
 wiki draft telegram ...
 wiki draft discord ...
 wiki draft consolidate --ref note:<id> ...
+wiki draft candidates --limit 10
+wiki draft candidate <candidate-id>
+wiki draft reject <draft-id>
 wiki approve <draft-id>
 ```
 
@@ -106,9 +113,17 @@ preflight
 
 `wiki query` 只讀已完成 cache / graph / index，不在前台對話臨時重編全庫。回答必須帶來源筆記或路徑；找不到來源時回報資料不足。
 
-`wiki draft consolidate` 是背景整理入口。它只能從 operator 提供的整理內容與既有本機 refs 產生 reviewable draft，不得把整理結果直接放進 compiled pages 或寫回 Joplin。整理結果必須通過 `wiki approve`，再由下一輪 Joplin sync / compile 進入正式 read path。
+`wiki draft consolidate` 是 explicit-ref 背景整理入口。它從 operator 提供的整理目的與既有本機 refs 產生 source-backed reviewable draft。`note:` refs 只讀 `compiled/notes.json`，`page:` refs 只讀 `compiled/pages.json` 或 `compiled/pages/<id>.json`。找不到 compiled source 時 fail closed，不建立 draft。整理結果不得直接放進 compiled pages 或寫回 Joplin；必須通過 `wiki approve`，再由下一輪 Joplin sync / compile 進入正式 read path。
 
-`wiki audit` 是本機 governance 檢查。它檢查 dangling link、missing source、evidence gap、consolidation draft 缺 target 等 deterministic 問題，不做 semantic grading，也不呼叫 LLM。
+全筆記庫整理拆成三個 explicit phases：
+
+1. Phase 1: `wiki draft consolidate --ref ...` 針對 operator 指定 refs 建立 deterministic extractive draft。內容保留 goal、source refs、source titles、bounded excerpts。
+2. Phase 2: `wiki draft candidates --limit N` 只讀 compiled artifacts，產生 bounded candidate list；`wiki draft candidate <candidate-id>` 把選定候選轉成 reviewable consolidation draft。
+3. Phase 3: local review artifacts 追蹤 pending、approved、rejected 與 rollback evidence；`wiki draft reject <draft-id>` 記錄 rejected evidence，`wiki approve <draft-id>` 成功後記錄 approved evidence 與 Joplin note id。
+
+這個分期不承諾 LLM 摘要、embedding retrieval、語意去重或背景排程。候選探索先用 deterministic local heuristics，讓 operator 可以控制批次與審核負擔。
+
+`wiki audit` 是本機 governance 檢查。它檢查 dangling link、missing source、evidence gap、consolidation draft 缺 target 等 deterministic 問題，也讀取 local review artifacts 輸出 pending、approved、rejected 統計；不做 semantic grading，也不呼叫 LLM。
 
 ## Background Job Model
 
@@ -189,6 +204,27 @@ wiki draft consolidate --ref note:note-a --ref page:page-topic "整理內容"
   -> intended_target.conflict_behavior: manual_review
 ```
 
+Full-library candidate flow 仍使用同一個 review gate：
+
+```text
+wiki draft candidates --limit 10
+  -> candidates/consolidation-candidates.json
+  -> candidate_id、refs、reason、priority、goal、status
+
+wiki draft candidate <candidate-id>
+  -> drafts/<draft-id>.json
+  -> kind: consolidate
+  -> provenance.candidate_id
+  -> review/consolidation-reviews.json decision: pending
+
+wiki draft reject <draft-id>
+  -> review/consolidation-reviews.json decision: rejected
+
+wiki approve <draft-id>
+  -> Joplin Data API create note
+  -> review/consolidation-reviews.json decision: approved, joplin_note_id, rollback evidence
+```
+
 Hermes 可以協助建立 consolidation draft，但不得把 draft 當成 foreground answer source；回答記憶問題仍必須使用 `wiki query`、`wiki read`、`wiki links` 回傳的 source-backed evidence。
 
 ## First Slice
@@ -221,6 +257,9 @@ wiki query "問題"
 - `wiki query` 不直接打 Joplin Data API 全庫搜尋。
 - `wiki read` / `wiki links` / `wiki audit` 只讀寫本機 artifacts。
 - `wiki draft consolidate` 不寫 raw cache、compiled pages、graph、audit 或 Joplin。
+- `wiki draft candidates` 只讀 compiled artifacts，寫 bounded local candidate artifact，不寫 draft 或 Joplin。
+- `wiki draft candidate` 只把已選候選轉成 filesystem draft 與 pending review evidence，不 approve。
+- `wiki draft reject` 只寫 local review evidence，不寫 Joplin。
 - `wiki approve` 是唯一 Joplin writeback 入口。
 
 ## Non-goals

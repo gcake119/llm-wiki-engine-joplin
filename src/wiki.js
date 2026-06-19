@@ -677,6 +677,7 @@ export function audit({ env = process.env } = {}) {
   const notesPath = path.join(stateDir, "compiled", "notes.json");
   const pagesPath = path.join(stateDir, "compiled", "pages.json");
   const graphPath = path.join(stateDir, "graph", "graph.json");
+  const reviewPath = path.join(stateDir, "review", "consolidation-reviews.json");
   const entries = [];
 
   const notes = fs.existsSync(notesPath) ? readJson(notesPath).notes || [] : [];
@@ -773,16 +774,23 @@ export function audit({ env = process.env } = {}) {
   entries.sort((a, b) => {
     return a.kind.localeCompare(b.kind) || a.ref.localeCompare(b.ref);
   });
+  const reviews = fs.existsSync(reviewPath) ? readJson(reviewPath).reviews || [] : [];
+  const reviewCounts = {};
+  for (const review of reviews) {
+    reviewCounts[review.decision] = (reviewCounts[review.decision] || 0) + 1;
+  }
   const result = {
     ok: true,
     state: "audited",
     total_errors: entries.length,
     kind_counts: countByKind(entries),
+    review_counts: reviewCounts,
   };
   writeJson(path.join(stateDir, "audit", "error-book.json"), {
     entries,
     kind_counts: result.kind_counts,
     total_errors: result.total_errors,
+    review_counts: reviewCounts,
   });
   return result;
 }
@@ -819,6 +827,154 @@ function validateDraftRefs(kind, refs) {
   return null;
 }
 
+function boundedText(value, limit = 280) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit - 1).trim()}…` : text;
+}
+
+function resolveConsolidationSources(refs, stateDir) {
+  const notesPath = path.join(stateDir, "compiled", "notes.json");
+  const pagesPath = path.join(stateDir, "compiled", "pages.json");
+  const notes = fs.existsSync(notesPath) ? readJson(notesPath).notes || [] : [];
+  const pages = fs.existsSync(pagesPath) ? readJson(pagesPath).pages || [] : [];
+
+  return refs.map((refValue) => {
+    const ref = parseRef(refValue);
+    if (ref.kind === "note") {
+      const note = notes.find((item) => item.id === ref.id);
+      if (!note) return null;
+      return {
+        ref: refValue,
+        title: note.title || ref.id,
+        excerpt: boundedText(note.plain_text),
+      };
+    }
+
+    const pagePath = path.join(stateDir, "compiled", "pages", `${ref.id}.json`);
+    const page = pages.find((item) => item.page_id === ref.id) ||
+      (fs.existsSync(pagePath) ? readJson(pagePath) : null);
+    if (!page) return null;
+    const sectionText = (page.sections || []).map((section) => section.text).join(" ");
+    return {
+      ref: refValue,
+      title: page.title || ref.id,
+      excerpt: boundedText(page.summary || sectionText),
+    };
+  });
+}
+
+function consolidationContent(goal, sources) {
+  return [
+    `# ${goal}`,
+    "",
+    "## Sources",
+    ...sources.map((source) => `- ${source.ref} — ${source.title}`),
+    "",
+    "## Extracted notes",
+    ...sources.map((source) => [
+      `### ${source.title}`,
+      `Ref: ${source.ref}`,
+      source.excerpt || "No local excerpt available.",
+    ].join("\n")),
+  ].join("\n");
+}
+
+function candidateTopic(title) {
+  const words = String(title || "")
+    .replace(/\bpart\s+\d+\b/gi, "")
+    .replace(/\b\d+\b/g, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.slice(0, 2).join(" ");
+}
+
+function candidateId(refs) {
+  return `candidate-${crypto
+    .createHash("sha256")
+    .update(refs.join("\n"))
+    .digest("hex")
+    .slice(0, 12)}`;
+}
+
+export function draftCandidates(rest = [], { env = process.env, now = () => new Date() } = {}) {
+  const stateDir = defaultStateDir(env);
+  const notesPath = path.join(stateDir, "compiled", "notes.json");
+  if (!fs.existsSync(notesPath)) {
+    return safeError("WIKI_COMPILED_INDEX_MISSING", "Run wiki compile before candidate discovery.");
+  }
+
+  const limitIndex = rest.indexOf("--limit");
+  const limit = limitIndex >= 0 ? Math.max(0, Number.parseInt(rest[limitIndex + 1], 10) || 0) : 10;
+  const groups = new Map();
+  for (const note of readJson(notesPath).notes || []) {
+    const topic = candidateTopic(note.title);
+    if (!topic) continue;
+    const group = groups.get(topic) || [];
+    group.push(note);
+    groups.set(topic, group);
+  }
+
+  const candidates = [...groups.entries()]
+    .filter(([, notes]) => notes.length > 1)
+    .sort(([topicA], [topicB]) => topicA.localeCompare(topicB))
+    .slice(0, limit)
+    .map(([topic, notes]) => {
+      const refs = notes.map((note) => `note:${note.id}`);
+      return {
+        candidate_id: candidateId(refs),
+        refs,
+        reason: "related_title",
+        priority: "medium",
+        goal: `Consolidate ${topic} notes`,
+        status: "pending_review",
+      };
+    });
+
+  const artifact = {
+    created_at: now().toISOString(),
+    candidates,
+  };
+  writeJson(path.join(stateDir, "candidates", "consolidation-candidates.json"), artifact);
+  return {
+    ok: true,
+    state: "candidates_found",
+    candidates,
+    path: path.join("candidates", "consolidation-candidates.json"),
+  };
+}
+
+export function draftCandidate(candidateIdValue, { env = process.env, now = () => new Date() } = {}) {
+  let id;
+  try {
+    id = safeNoteId(candidateIdValue);
+  } catch {
+    return safeError("DRAFT_CANDIDATE_MISSING", "Candidate was not found.");
+  }
+
+  const stateDir = defaultStateDir(env);
+  const candidatesPath = path.join(stateDir, "candidates", "consolidation-candidates.json");
+  const candidates = fs.existsSync(candidatesPath) ? readJson(candidatesPath).candidates || [] : [];
+  const candidate = candidates.find((item) => item.candidate_id === id);
+  if (!candidate) {
+    return safeError("DRAFT_CANDIDATE_MISSING", "Candidate was not found.");
+  }
+
+  const result = draft(
+    "consolidate",
+    [...candidate.refs.flatMap((ref) => ["--ref", ref]), candidate.goal],
+    { env, now },
+  );
+  if (!result.ok) return result;
+
+  const draftPath = path.join(stateDir, "drafts", `${result.draft_id}.json`);
+  const draftData = readJson(draftPath);
+  draftData.provenance.candidate_id = candidate.candidate_id;
+  writeJson(draftPath, draftData);
+  writeReviewEvidence(stateDir, draftData, "pending", "", now);
+  return result;
+}
+
 export function draft(kind, rest = [], { env = process.env, now = () => new Date() } = {}) {
   if (!DRAFT_KINDS.has(kind)) {
     return safeError("DRAFT_KIND_UNSUPPORTED", "Draft kind is not supported.");
@@ -831,10 +987,20 @@ export function draft(kind, rest = [], { env = process.env, now = () => new Date
     return safeError("DRAFT_CONTENT_MISSING", "Draft content is required.");
   }
 
+  const stateDir = defaultStateDir(env);
+  let draftContent = content;
+  if (kind === "consolidate") {
+    const sources = resolveConsolidationSources(refs, stateDir);
+    if (sources.some((source) => !source)) {
+      return safeError("DRAFT_SOURCE_MISSING", "Draft source was not found in compiled artifacts.");
+    }
+    draftContent = consolidationContent(content, sources);
+  }
+
   const createdAt = now().toISOString();
   const draftId = `draft-${kind}-${crypto
     .createHash("sha256")
-    .update(`${kind}\n${refs.join("\n")}\n${content}`)
+    .update(`${kind}\n${refs.join("\n")}\n${draftContent}`)
     .digest("hex")
     .slice(0, 12)}`;
   const draftData = {
@@ -842,7 +1008,7 @@ export function draft(kind, rest = [], { env = process.env, now = () => new Date
     kind,
     status: "pending_review",
     created_at: createdAt,
-    content,
+    content: draftContent,
     provenance: {
       source: kind,
       input: "cli",
@@ -854,7 +1020,7 @@ export function draft(kind, rest = [], { env = process.env, now = () => new Date
       conflict_behavior: "manual_review",
     },
   };
-  writeJson(path.join(defaultStateDir(env), "drafts", `${draftId}.json`), draftData);
+  writeJson(path.join(stateDir, "drafts", `${draftId}.json`), draftData);
 
   return {
     ok: true,
@@ -876,7 +1042,46 @@ function validApprovalDraft(draftData) {
   );
 }
 
-export async function approve(draftId, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
+function writeReviewEvidence(stateDir, draftData, decision, joplinNoteId, now) {
+  if (draftData.kind !== "consolidate" || !draftData.provenance?.candidate_id) return;
+  const reviewPath = path.join(stateDir, "review", "consolidation-reviews.json");
+  const state = fs.existsSync(reviewPath) ? readJson(reviewPath) : { reviews: [] };
+  state.reviews.push({
+    candidate_id: draftData.provenance.candidate_id,
+    draft_id: draftData.draft_id,
+    decision,
+    joplin_note_id: joplinNoteId || "",
+    decided_at: now().toISOString(),
+    rollback: joplinNoteId ? { joplin_note_id: joplinNoteId } : {},
+  });
+  writeJson(reviewPath, state);
+}
+
+export function rejectDraft(draftId, { env = process.env, now = () => new Date() } = {}) {
+  let id;
+  try {
+    id = safeNoteId(draftId);
+  } catch {
+    return safeError("DRAFT_NOT_FOUND", "Draft was not found.");
+  }
+
+  const stateDir = defaultStateDir(env);
+  const draftPath = path.join(stateDir, "drafts", `${id}.json`);
+  if (!fs.existsSync(draftPath)) {
+    return safeError("DRAFT_NOT_FOUND", "Draft was not found.");
+  }
+
+  const draftData = readJson(draftPath);
+  writeReviewEvidence(stateDir, draftData, "rejected", "", now);
+  draftData.status = "rejected";
+  writeJson(draftPath, draftData);
+  return { ok: true, state: "rejected", draft_id: id };
+}
+
+export async function approve(
+  draftId,
+  { env = process.env, fetchImpl = globalThis.fetch, now = () => new Date() } = {},
+) {
   let id;
   try {
     id = safeNoteId(draftId);
@@ -889,6 +1094,7 @@ export async function approve(draftId, { env = process.env, fetchImpl = globalTh
     return safeError("DRAFT_NOT_FOUND", "Draft was not found.");
   }
 
+  const stateDir = defaultStateDir(env);
   const draftData = readJson(draftPath);
   if (!validApprovalDraft(draftData)) {
     return safeError(
@@ -926,6 +1132,7 @@ export async function approve(draftId, { env = process.env, fetchImpl = globalTh
     return safeError("JOPLIN_WRITEBACK_FAILED", "Joplin writeback failed.");
   }
   const note = await response.json();
+  writeReviewEvidence(stateDir, draftData, "approved", note.id || "", now);
   return {
     ok: true,
     state: "approved",
@@ -1075,6 +1282,15 @@ export async function run(argv, env = process.env, deps = {}) {
     return JSON.stringify(audit({ env }), null, 2);
   }
   if (command === "draft") {
+    if (rest[0] === "candidates") {
+      return JSON.stringify(draftCandidates(rest.slice(1), { env, ...deps }), null, 2);
+    }
+    if (rest[0] === "candidate") {
+      return JSON.stringify(draftCandidate(rest[1], { env, ...deps }), null, 2);
+    }
+    if (rest[0] === "reject") {
+      return JSON.stringify(rejectDraft(rest[1], { env, ...deps }), null, 2);
+    }
     return JSON.stringify(draft(rest[0], rest.slice(1), { env, ...deps }), null, 2);
   }
   if (command === "approve") {
