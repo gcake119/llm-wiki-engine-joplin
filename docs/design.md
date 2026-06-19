@@ -83,12 +83,19 @@ wiki query "問題"
 wiki read <ref>
 wiki links <ref>
 wiki audit
+wiki automate once --draft-top <N> --notify
+wiki automate status
 wiki draft telegram ...
 wiki draft discord ...
 wiki draft consolidate --target-notebook <notebook-id> --ref note:<id> ...
+wiki draft llm-consolidate --target-notebook <notebook-id> --ref note:<id> ...
 wiki draft candidates --limit 10
 wiki draft candidate <candidate-id> --target-notebook <notebook-id>
 wiki draft reject <draft-id>
+wiki semantic build
+wiki semantic query "問題"
+wiki capture telegram --input <path>
+wiki capture discord --input <path>
 wiki approve <draft-id>
 ```
 
@@ -111,21 +118,41 @@ preflight
   -> write status.json
 ```
 
-`wiki query` 只讀已完成 cache / graph / index，不在前台對話臨時重編全庫。回答必須帶來源筆記或路徑；找不到來源時回報資料不足。
+`wiki query` 只讀已完成 cache / graph / index，不在前台對話臨時重編全庫。回答必須帶來源筆記或路徑；找不到來源時回報資料不足。若 operator 先跑過 `wiki semantic build`，foreground retrieval 可以參考 `wiki semantic query` 的 scored refs，但最終仍要回到 compiled page、`wiki read` 或 source refs 驗證；`wiki query` 不會隱性啟動 embedding build。
 
 `wiki draft consolidate` 是 explicit-ref 背景整理入口。它從 operator 提供的整理目的與既有本機 refs 產生 source-backed reviewable draft。`note:` refs 只讀 `compiled/notes.json`，`page:` refs 只讀 `compiled/pages.json` 或 `compiled/pages/<id>.json`。找不到 compiled source 時 fail closed，不建立 draft。整理結果不得直接放進 compiled pages 或寫回 Joplin；必須通過 `wiki approve`，再由下一輪 Joplin sync / compile 進入正式 read path。
+
+`wiki draft llm-consolidate` 是 LLM-assisted review draft 入口。它只接受 compiled source refs，預設呼叫 local `ollama call` 或測試替身，輸出仍是 `kind: "consolidate"` 的 filesystem draft。draft 必須記錄 `provenance.llm`、source refs、prompt version、model 與 evidence status。LLM output 不是 foreground answer source，不能寫入 compiled pages，不能繞過 `wiki approve`。
 
 全筆記庫整理拆成三個 explicit phases：
 
 1. Phase 1: `wiki draft consolidate --target-notebook ... --ref ...` 針對 operator 指定 refs 建立 deterministic extractive draft。內容保留 goal、source refs、source titles、bounded excerpts；若提供 target notebook，draft 會保存到 `intended_target.notebook_id`，但不寫回 Joplin。
-2. Phase 2: `wiki draft candidates --limit N` 只讀 compiled artifacts，產生 bounded candidate list；候選使用 deterministic multi-signal scoring，包含 `reasons`、`score`、`priority`、`refs`、`goal`、`status`、`proposed_target`。目前 signals 包含 title prefix、same parent notebook、markdown links、shared page sources、recent update cluster。`wiki draft candidate <candidate-id>` 把選定候選轉成 reviewable consolidation draft。
-3. Phase 3: local review artifacts 追蹤 pending、approved、rejected 與 rollback evidence；`wiki draft reject <draft-id>` 記錄 rejected evidence，`wiki approve <draft-id>` 成功後記錄 approved evidence 與 Joplin note id。
+2. Phase 2: `wiki draft llm-consolidate --target-notebook ... --ref ...` 可用 local LLM 協助整理 source-backed summary、dedupe recommendation 與 open questions；provider 或 source missing 時 fail closed，不建立 partial draft。
+3. Phase 3: `wiki draft candidates --limit N` 只讀 compiled artifacts，產生 bounded candidate list；候選使用 deterministic multi-signal scoring，包含 `reasons`、`score`、`priority`、`refs`、`goal`、`status`、`proposed_target`。目前 signals 包含 title prefix、same parent notebook、markdown links、shared page sources、recent update cluster。`wiki draft candidate <candidate-id>` 把選定候選轉成 reviewable consolidation draft。
+4. Phase 4: local review artifacts 追蹤 pending、approved、rejected 與 rollback evidence；`wiki draft reject <draft-id>` 記錄 rejected evidence，`wiki approve <draft-id>` 成功後記錄 approved evidence 與 Joplin note id。
+5. Phase 5: `wiki automate once --draft-top N --notify` 可由 Hermes、launchd、cron 或其他外部 runner 定期觸發。它會執行 sync、compile、candidate discovery、audit，然後最多替前 N 個 pending candidates 產生 LLM-assisted review drafts，並寫入 `automation/summaries/<run-id>.json`。`wiki automate status` 只讀 latest run 與 summary，不啟動背景工作。省略 `--draft-top` 或使用 `--draft-top 0` 時，只更新 evidence 與 candidates，不建立 LLM drafts。
 
-這個分期不承諾 LLM 摘要、embedding retrieval、語意去重或背景排程。候選探索先用 deterministic local heuristics，讓 operator 可以控制批次與審核負擔。
+這個分期仍不承諾內建 daemon、queue、dashboard、自動 target notebook 選擇或自動 approve。候選探索先用 deterministic local heuristics，LLM 只協助建立待審草稿，讓 operator 可以控制批次與審核負擔。
+
+Semantic retrieval 是可重建輔助索引，不是答案來源：
+
+```text
+wiki semantic build
+  -> 只讀 compiled/pages.json
+  -> semantic/index.json
+
+wiki semantic query "問題"
+  -> scored page refs / source refs / snippets
+  -> operator 或 Hermes 再用 wiki read 驗證
+```
+
+semantic index missing、stale 或 provider missing 時，`wiki semantic query`／`wiki semantic build` 回傳明確狀態；既有 `wiki query`、`wiki read`、`wiki compile`、`wiki draft`、`wiki audit`、`wiki approve` 不被 semantic retrieval 阻塞。
 
 `wiki compile` 產生 source-backed topic/entity pages。單一 note 仍會保留相容的薄 page；同一 deterministic topic 與 parent context 下的多篇 notes 會聚合成 grouped page。page summary 與 sections 只使用 bounded source excerpts，每個 fact-bearing section 都保留 source note refs，不產生 unsupported facts。
 
 `wiki audit` 是本機 governance 檢查。它檢查 dangling link、missing source、evidence gap、candidate refs 太少、consolidation draft 缺 target 等 deterministic 問題，也讀取 local review artifacts 輸出 pending、approved、rejected 統計；不做 semantic grading，也不呼叫 LLM。
+
+`wiki automate once --draft-top N --notify` 是定期全庫整理的 one-shot runner，不是常駐 scheduler。它可以由 Hermes、launchd 或 cron 定期呼叫，但 repo 只負責 CLI 執行與 artifacts。runner 會寫入 `automation/runs/<run-id>.json`、`automation/latest.json`、`automation/summaries/<run-id>.json`；notification 只包含 run id、候選數、draft 數、audit error 數與 warning，不包含 token、raw prompt 或 raw note body。LLM provider missing 只會成為 summary warning，不會抹掉 maintenance evidence。
 
 ## Background Job Model
 
@@ -169,14 +196,17 @@ approve 寫回 Joplin 時，只寫到指定 inbox notebook。未 approve 的 Tel
 ```text
 Telegram allowlist chat
 Discord personal server allowlist channel
-  -> normalize message batch
-  -> summarize / classify / redact
-  -> /Users/hermes/knowledge/drafts/<draft-id>.md
+  -> external adapter or Hermes normalizes message batch
+  -> wiki capture telegram|discord --input <path>
+  -> redact / dedupe / write capture run evidence
+  -> /Users/hermes/knowledge/drafts/<draft-id>.json
   -> wiki approve <draft-id>
   -> Joplin Data API create note
 ```
 
-第一版 Discord 定位是個人伺服器，不讀任意公開伺服器。Telegram 來源必須用 allowlisted chat id。附件、圖片、連結第一版只保存 metadata，不下載或 OCR。
+第一版 Discord 定位是個人伺服器，不讀任意公開伺服器。Telegram 來源必須用 allowlisted chat id。repo 內不實作常駐 bot adapter，只接收 Hermes 或外部 process 傳入的 normalized JSON events。附件、圖片、連結第一版只保存 metadata，不下載或 OCR。
+
+`wiki capture telegram --input <path>` 與 `wiki capture discord --input <path>` 只產生 filesystem draft 與 `capture/runs/<run-id>.json` evidence。disallowed、duplicate、rate-limited events 只記錄 rejection，不建立 draft，不寫回 Joplin。正式沉澱仍必須由 operator review 後執行 `wiki approve`。
 
 Draft 必須包含 provenance：
 
@@ -230,6 +260,7 @@ wiki approve <draft-id>
 ```
 
 Hermes 可以協助建立 consolidation draft，但不得把 draft 當成 foreground answer source；回答記憶問題仍必須使用 `wiki query`、`wiki read`、`wiki links` 回傳的 source-backed evidence。
+LLM-assisted consolidation draft 遵守相同 gate：Hermes 可用它協助整理 refs，但不得把 LLM output 當成正式記憶答案，也不得宣稱已寫回 Joplin，除非 `wiki approve` 成功。
 
 ## First Slice
 
@@ -264,6 +295,8 @@ wiki query "問題"
 - `wiki draft candidates` 只讀 compiled artifacts，寫 bounded local candidate artifact，不寫 draft 或 Joplin。
 - `wiki draft candidate` 只把已選候選轉成 filesystem draft 與 pending review evidence，不 approve。
 - `wiki draft reject` 只寫 local review evidence，不寫 Joplin。
+- `wiki automate status` 只讀 `automation/latest.json`、run artifact 與 summary，不觸發 sync、compile、LLM、semantic build、capture 或 approve。
+- `wiki automate once --draft-top N --notify` 可由外部排程器定期呼叫，但不內建 daemon，不自動選永久 target notebook，不自動 approve，不寫回 Joplin。
 - `wiki approve` 是唯一 Joplin writeback 入口。
 
 ## Non-goals
@@ -276,4 +309,6 @@ wiki query "問題"
 - 不第一版做附件 OCR。
 - 不第一版做全自動「值得保存」判斷。
 - 不把 consolidation draft 自動升級為正式 compiled wiki page。
-- 不在 foreground read path 加入 LLM、embedding、vector DB 或 RAG service。
+- 不在 repo 內建立常駐 scheduler daemon、launchd plist、cron job、queue service 或 dashboard。
+- 不自動選擇永久 Joplin target notebook。
+- 不在 foreground read path 隱性啟動 LLM、embedding、vector DB 或 RAG service。

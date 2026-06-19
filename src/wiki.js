@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import { execFileSync as nodeExecFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import process from "node:process";
@@ -13,6 +14,9 @@ const COMMANDS = new Set([
   "read",
   "links",
   "audit",
+  "automate",
+  "semantic",
+  "capture",
   "notify",
   "draft",
   "approve",
@@ -851,6 +855,268 @@ export function audit({ env = process.env } = {}) {
   return result;
 }
 
+function automationRunId(date) {
+  return date.toISOString().replace(/[^0-9A-Za-z]+/g, "-").replace(/-$/g, "");
+}
+
+function automationStep(name, result, startedAt, finishedAt, artifacts) {
+  const step = {
+    name,
+    status: result.ok ? "completed" : "failed",
+    started_at: startedAt,
+    finished_at: finishedAt,
+    artifacts: result.ok ? artifacts : [],
+  };
+  if (!result.ok) {
+    step.error = {
+      code: result.code || "WIKI_AUTOMATION_STEP_FAILED",
+      message: result.message || "Wiki automation step failed.",
+    };
+  }
+  return step;
+}
+
+function parseAutomateOnceOptions(rest = []) {
+  let draftTop = 0;
+  let notify = false;
+  for (let index = 0; index < rest.length; index += 1) {
+    const item = rest[index];
+    if (item === "--notify") {
+      notify = true;
+      continue;
+    }
+    if (item === "--draft-top") {
+      const value = rest[index + 1];
+      if (!/^\d+$/.test(String(value || ""))) {
+        return safeError(
+          "AUTOMATION_DRAFT_TOP_INVALID",
+          "Automation draft limit must be a non-negative integer.",
+        );
+      }
+      draftTop = Number.parseInt(value, 10);
+      index += 1;
+    }
+  }
+  return { ok: true, draftTop, notify };
+}
+
+function automationSummaryNextActions(summary) {
+  if (summary.drafts_created > 0) return ["review_drafts", "approve_or_reject"];
+  if (summary.warnings.includes("LLM_PROVIDER_MISSING")) {
+    return ["configure_llm_provider", "review_candidates"];
+  }
+  if (summary.warnings.includes("target_required")) {
+    return ["set_target_notebook", "review_candidates"];
+  }
+  return summary.candidates_seen > 0 ? ["review_candidates"] : ["no_candidates"];
+}
+
+function periodicNotificationMessage(summary) {
+  const warningText = summary.warnings.length
+    ? ` warnings=${summary.warnings.join(",")}`
+    : "";
+  return [
+    "[Hermes Wiki] periodic automation completed",
+    `run=${summary.run_id}`,
+    `candidates=${summary.candidates_seen}`,
+    `drafts=${summary.drafts_created}`,
+    `audit_errors=${summary.audit_total_errors}`,
+    warningText.trim(),
+  ].filter(Boolean).join(" ");
+}
+
+async function createPeriodicDrafts(candidates, draftTop, deps) {
+  const selected = candidates
+    .filter((candidate) => candidate.status === "pending_review")
+    .slice(0, draftTop);
+  const draftIds = [];
+  const warnings = [];
+  if (selected.some((candidate) => !candidate.proposed_target?.notebook_id)) {
+    warnings.push("target_required");
+  }
+  for (const candidate of selected) {
+    const targetNotebook = candidate.proposed_target?.notebook_id || "";
+    const result = await llmConsolidate(
+      [
+        ...(targetNotebook ? ["--target-notebook", targetNotebook] : []),
+        ...candidate.refs.flatMap((ref) => ["--ref", ref]),
+        candidate.goal,
+      ],
+      deps,
+    );
+    if (!result.ok) {
+      warnings.push(result.code || "LLM_DRAFT_FAILED");
+      if (result.code === "LLM_PROVIDER_MISSING") return { draftIds: [], warnings };
+      continue;
+    }
+    draftIds.push(result.draft_id);
+    const draftPath = path.join(defaultStateDir(deps.env), "drafts", `${result.draft_id}.json`);
+    const draftData = readJson(draftPath);
+    draftData.provenance.candidate_id = candidate.candidate_id;
+    writeJson(draftPath, draftData);
+  }
+  return { draftIds, warnings };
+}
+
+export async function automateOnce({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  now = () => new Date(),
+  afterAutomationStep,
+  draftTop = 0,
+  notify = false,
+  llmProvider,
+  execFileSync = nodeExecFileSync,
+} = {}) {
+  const stateDir = defaultStateDir(env);
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+  } catch {
+    return safeError(
+      "WIKI_STATE_DIR_UNAVAILABLE",
+      "Wiki state directory is not writable.",
+    );
+  }
+  const lockPath = path.join(stateDir, "lock");
+  const statusPath = path.join(stateDir, "status.json");
+  if (fs.existsSync(lockPath)) {
+    return {
+      ...safeError("WIKI_BUSY", "Another wiki job is already running."),
+      current_status: fs.existsSync(statusPath) ? status(stateDir) : null,
+    };
+  }
+
+  const startedAtDate = now();
+  const runId = automationRunId(startedAtDate);
+  const runPath = path.join(stateDir, "automation", "runs", `${runId}.json`);
+  const latestPath = path.join(stateDir, "automation", "latest.json");
+  const summaryPath = path.join(stateDir, "automation", "summaries", `${runId}.json`);
+  const steps = [];
+  const runArtifact = {
+    ok: true,
+    state: "automation_completed",
+    run_id: runId,
+    started_at: startedAtDate.toISOString(),
+    finished_at: "",
+    exit_code: 0,
+    warnings: [],
+    steps,
+  };
+  const record = (result) => {
+    if (!result.ok) {
+      runArtifact.ok = false;
+      runArtifact.state = "automation_failed";
+      runArtifact.exit_code = 1;
+      runArtifact.code = result.code || "WIKI_AUTOMATION_STEP_FAILED";
+      runArtifact.message = result.message || "Wiki automation failed.";
+    }
+    runArtifact.finished_at = now().toISOString();
+    writeJson(runPath, runArtifact);
+    writeJson(latestPath, {
+      run_id: runId,
+      path: path.join("automation", "runs", `${runId}.json`),
+    });
+  };
+  const runStep = async (name, action, artifacts) => {
+    const stepStartedAt = now().toISOString();
+    const result = await action();
+    const step = automationStep(name, result, stepStartedAt, now().toISOString(), artifacts);
+    steps.push(step);
+    if (typeof afterAutomationStep === "function") afterAutomationStep(name, result);
+    if (!result.ok) record(result);
+    return result;
+  };
+
+  let result = await runStep("sync", () => sync({ env, fetchImpl, now }), [
+    "raw/notes-metadata.json",
+  ]);
+  if (!result.ok) return runArtifact;
+  result = await runStep("compile", () => compile({ env, now }), [
+    "compiled/notes.json",
+    "compiled/pages.json",
+  ]);
+  if (!result.ok) return runArtifact;
+  result = await runStep("draft candidates", () => draftCandidates([], { env, now }), [
+    "candidates/consolidation-candidates.json",
+  ]);
+  if (!result.ok) return runArtifact;
+  result = await runStep("audit", () => audit({ env }), ["audit/error-book.json"]);
+  if (!result.ok) return runArtifact;
+
+  const candidates = readJson(
+    path.join(stateDir, "candidates", "consolidation-candidates.json"),
+  ).candidates || [];
+  const draftResult = draftTop > 0
+    ? await createPeriodicDrafts(candidates, draftTop, {
+        env,
+        now,
+        llmProvider,
+        execFileSync,
+      })
+    : { draftIds: [], warnings: [] };
+  const summary = {
+    run_id: runId,
+    created_at: now().toISOString(),
+    candidates_seen: candidates.length,
+    drafts_created: draftResult.draftIds.length,
+    draft_ids: draftResult.draftIds,
+    audit_total_errors: result.total_errors || 0,
+    notification: null,
+    warnings: [...new Set(draftResult.warnings)],
+    next_actions: [],
+  };
+  summary.next_actions = automationSummaryNextActions(summary);
+  if (notify) {
+    summary.notification = await notifyDiscord(periodicNotificationMessage(summary), {
+      env,
+      fetchImpl,
+    });
+  }
+  writeJson(summaryPath, summary);
+  record(result);
+  return {
+    ok: true,
+    state: "automation_completed",
+    run_id: runId,
+    path: path.join("automation", "runs", `${runId}.json`),
+    summary_path: path.join("automation", "summaries", `${runId}.json`),
+    steps: steps.map((step) => ({ name: step.name, status: step.status })),
+  };
+}
+
+export function automateStatus({ env = process.env } = {}) {
+  const stateDir = defaultStateDir(env);
+  const latestPath = path.join(stateDir, "automation", "latest.json");
+  if (!fs.existsSync(latestPath)) {
+    return safeError(
+      "AUTOMATION_STATUS_MISSING",
+      "Run wiki automate once before checking automation status.",
+    );
+  }
+  const latest = readJson(latestPath);
+  const latestRunPath = latest.path || path.join("automation", "runs", `${latest.run_id}.json`);
+  const runPath = path.join(stateDir, latestRunPath);
+  if (!latest.run_id || !fs.existsSync(runPath)) {
+    return safeError(
+      "AUTOMATION_STATUS_MISSING",
+      "Latest automation run artifact was not found.",
+    );
+  }
+  const summaryPath = path.join("automation", "summaries", `${latest.run_id}.json`);
+  const absoluteSummaryPath = path.join(stateDir, summaryPath);
+  const summary = fs.existsSync(absoluteSummaryPath)
+    ? { ...readJson(absoluteSummaryPath), path: summaryPath }
+    : null;
+  return {
+    ok: true,
+    state: "automation_status",
+    latest_run_id: latest.run_id,
+    latest_run_path: latestRunPath,
+    latest_run: readJson(runPath),
+    summary,
+  };
+}
+
 const DRAFT_KINDS = new Set(["telegram", "discord", "feedback", "consolidate"]);
 
 function draftParts(rest) {
@@ -900,6 +1166,19 @@ function validateTargetNotebook(targetNotebook) {
 function boundedText(value, limit = 280) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text.length > limit ? `${text.slice(0, limit - 1).trim()}…` : text;
+}
+
+function consolidationPrompt(goal, sources) {
+  const sourceText = sources
+    .map((source) => `- ${source.ref} ${source.title}: ${source.excerpt}`)
+    .join("\n");
+  return [
+    "Create a source-backed summary, duplicate or related-note recommendations, and open questions.",
+    "Use only the provided sources. Mark missing evidence as unknown.",
+    `Goal: ${goal}`,
+    "Sources:",
+    sourceText,
+  ].join("\n");
 }
 
 function resolveConsolidationSources(refs, stateDir) {
@@ -1163,6 +1442,320 @@ export function draft(kind, rest = [], { env = process.env, now = () => new Date
   };
 }
 
+function defaultLlmProvider(env, execFileSync = nodeExecFileSync) {
+  const model = env.WIKI_LLM_MODEL || "gemma3:12b";
+  return async ({ prompt, refs }) => ({
+    provider: "ollama",
+    model,
+    text: execFileSync("ollama", ["call", model], {
+      input: prompt,
+      encoding: "utf8",
+      timeout: 120000,
+    }).trim(),
+    refs,
+  });
+}
+
+export async function llmConsolidate(
+  rest = [],
+  {
+    env = process.env,
+    now = () => new Date(),
+    llmProvider,
+    execFileSync = nodeExecFileSync,
+  } = {},
+) {
+  const { refs, targetNotebook, content } = draftParts(rest);
+  const refError = validateDraftRefs("consolidate", refs);
+  if (refError) return refError;
+  const targetError = validateTargetNotebook(targetNotebook);
+  if (targetError) return targetError;
+  if (!content) {
+    return safeError("DRAFT_CONTENT_MISSING", "Draft content is required.");
+  }
+
+  const stateDir = defaultStateDir(env);
+  const sources = resolveConsolidationSources(refs, stateDir);
+  if (sources.some((source) => !source)) {
+    return safeError("DRAFT_SOURCE_MISSING", "Draft source was not found in compiled artifacts.");
+  }
+
+  const provider = llmProvider || defaultLlmProvider(env, execFileSync);
+  let llmResult;
+  try {
+    llmResult = await provider({
+      prompt: consolidationPrompt(content, sources),
+      refs,
+    });
+  } catch {
+    return safeError("LLM_PROVIDER_MISSING", "Local LLM provider is unavailable.");
+  }
+  if (!llmResult?.text) {
+    return safeError("LLM_PROVIDER_MISSING", "Local LLM provider returned no draft content.");
+  }
+
+  const createdAt = now().toISOString();
+  const draftContent = [
+    llmResult.text.trim(),
+    "",
+    "Source refs:",
+    ...sources.map((source) => `- ${source.ref}: ${source.title} — ${source.excerpt}`),
+  ].join("\n");
+  const draftId = `draft-consolidate-${crypto
+    .createHash("sha256")
+    .update(`llm\n${refs.join("\n")}\n${draftContent}`)
+    .digest("hex")
+    .slice(0, 12)}`;
+  writeJson(path.join(stateDir, "drafts", `${draftId}.json`), {
+    draft_id: draftId,
+    kind: "consolidate",
+    status: "pending_review",
+    created_at: createdAt,
+    content: draftContent,
+    provenance: {
+      source: "llm-consolidate",
+      input: "cli",
+      refs,
+      llm: {
+        provider: llmResult.provider || "ollama",
+        model: llmResult.model || env.WIKI_LLM_MODEL || "gemma3:12b",
+        prompt_version: "llm-consolidation-v1",
+        source_refs: refs,
+        created_at: createdAt,
+        evidence_status: "source_backed",
+      },
+    },
+    intended_target: {
+      type: "joplin_inbox",
+      notebook_id: targetNotebook,
+      conflict_behavior: "manual_review",
+    },
+  });
+
+  return {
+    ok: true,
+    state: "drafted",
+    draft_id: draftId,
+    kind: "consolidate",
+    path: path.join("drafts", `${draftId}.json`),
+  };
+}
+
+function pageChunkText(page) {
+  return [
+    page.title || "",
+    page.summary || "",
+    ...(page.sections || []).map((section) => section.text || ""),
+  ].join(" ").replace(/\s+/g, " ").trim();
+}
+
+function semanticIndexPath(stateDir) {
+  return path.join(stateDir, "semantic", "index.json");
+}
+
+export async function semanticBuild({
+  env = process.env,
+  now = () => new Date(),
+  embeddingProvider,
+} = {}) {
+  if (typeof embeddingProvider !== "function") {
+    return safeError("EMBEDDING_PROVIDER_MISSING", "Embedding provider is unavailable.");
+  }
+  const stateDir = defaultStateDir(env);
+  const pagesPath = path.join(stateDir, "compiled", "pages.json");
+  if (!fs.existsSync(pagesPath)) {
+    return safeError("WIKI_COMPILED_INDEX_MISSING", "Run wiki compile before semantic build.");
+  }
+  const pagesRaw = fs.readFileSync(pagesPath, "utf8");
+  const pages = JSON.parse(pagesRaw).pages || [];
+  const generatedAt = now().toISOString();
+  const chunks = [];
+  for (const page of pages) {
+    const text = pageChunkText(page);
+    if (!text) continue;
+    let embedding;
+    try {
+      embedding = await embeddingProvider({ text, page });
+    } catch {
+      return safeError("EMBEDDING_PROVIDER_MISSING", "Embedding provider is unavailable.");
+    }
+    chunks.push({
+      chunk_id: `chunk-${crypto.createHash("sha256").update(`${page.page_id}\n${text}`).digest("hex").slice(0, 12)}`,
+      page_id: page.page_id,
+      source_refs: page.sources || [],
+      snippet: boundedText(text, 280),
+      content_hash: crypto.createHash("sha256").update(text).digest("hex"),
+      embedding: {
+        model: embedding.model || "unknown",
+        dimensions: embedding.dimensions || embedding.vector?.length || 0,
+      },
+      generated_at: generatedAt,
+    });
+  }
+  const index = {
+    generated_at: generatedAt,
+    source_hash: crypto.createHash("sha256").update(pagesRaw).digest("hex"),
+    chunks,
+  };
+  writeJson(semanticIndexPath(stateDir), index);
+  return {
+    ok: true,
+    state: "semantic_index_built",
+    chunks_indexed: chunks.length,
+    path: path.join("semantic", "index.json"),
+  };
+}
+
+export function semanticQuery(question, { env = process.env } = {}) {
+  const stateDir = defaultStateDir(env);
+  const indexPath = semanticIndexPath(stateDir);
+  if (!fs.existsSync(indexPath)) {
+    return safeError("SEMANTIC_INDEX_MISSING", "Run wiki semantic build before semantic query.");
+  }
+  const pagesPath = path.join(stateDir, "compiled", "pages.json");
+  const index = readJson(indexPath);
+  if (fs.existsSync(pagesPath)) {
+    const sourceHash = crypto.createHash("sha256").update(fs.readFileSync(pagesPath, "utf8")).digest("hex");
+    if (index.source_hash && sourceHash !== index.source_hash) {
+      return safeError("SEMANTIC_INDEX_STALE", "Semantic index is stale. Rebuild it before semantic query.");
+    }
+  }
+  const terms = queryTerms(question);
+  const results = (index.chunks || [])
+    .map((chunk) => ({
+      page_id: chunk.page_id,
+      source_refs: chunk.source_refs || [],
+      snippet: chunk.snippet || "",
+      score: noteScore({ title: chunk.page_id, plain_text: chunk.snippet || "" }, terms),
+      authoritative: false,
+    }))
+    .sort((a, b) => b.score - a.score || a.page_id.localeCompare(b.page_id));
+  return {
+    ok: true,
+    state: "semantic_refs",
+    results,
+  };
+}
+
+function captureInputPath(rest) {
+  const inputIndex = rest.indexOf("--input");
+  return inputIndex >= 0 ? rest[inputIndex + 1] : "";
+}
+
+function captureAllowlist(source, env) {
+  const key = source === "telegram" ? "WIKI_CAPTURE_TELEGRAM_ALLOWLIST" : "WIKI_CAPTURE_DISCORD_ALLOWLIST";
+  return new Set(String(env[key] || "").split(",").map((item) => item.trim()).filter(Boolean));
+}
+
+function redactCaptureText(text) {
+  const warnings = [];
+  let redacted = String(text || "");
+  if (/\b(?:sk|token|key)-[A-Za-z0-9_-]+\b/i.test(redacted)) {
+    warnings.push("token");
+    redacted = redacted.replace(/\b(?:sk|token|key)-[A-Za-z0-9_-]+\b/gi, "[REDACTED_TOKEN]");
+  }
+  if (/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i.test(redacted)) {
+    warnings.push("email");
+    redacted = redacted.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
+  }
+  if (/\+?\d[\d .-]{7,}\d/.test(redacted)) {
+    warnings.push("phone");
+    redacted = redacted.replace(/\+?\d[\d .-]{7,}\d/g, "[REDACTED_PHONE]");
+  }
+  return { text: redacted, warnings };
+}
+
+function captureRunId(source, date) {
+  return `${source}-${automationRunId(date)}`;
+}
+
+export function capture(source, rest = [], { env = process.env, now = () => new Date() } = {}) {
+  if (!["telegram", "discord"].includes(source)) {
+    return safeError("CAPTURE_SOURCE_UNSUPPORTED", "Capture source is not supported.");
+  }
+  const inputPath = captureInputPath(rest);
+  if (!inputPath || !fs.existsSync(inputPath)) {
+    return safeError("CAPTURE_INPUT_MISSING", "Capture input file is missing.");
+  }
+  const stateDir = defaultStateDir(env);
+  const runDate = now();
+  const runId = captureRunId(source, runDate);
+  const allowlist = captureAllowlist(source, env);
+  const limit = Math.max(0, Number.parseInt(env.WIKI_CAPTURE_RATE_LIMIT || "100", 10) || 100);
+  const events = readJson(inputPath).events || [];
+  const seen = new Set();
+  const drafts = [];
+  const rejections = [];
+  for (const event of events) {
+    const sourceId = String(event.source_id || event.chat_id || event.channel_id || "");
+    const messageId = String(event.message_id || "");
+    const dedupeKey = `${source}:${sourceId}:${messageId}`;
+    const reject = (reason) => rejections.push({ reason, dedupe_key: dedupeKey, source_id: sourceId, message_id: messageId });
+    if (!allowlist.has(sourceId)) {
+      reject("CAPTURE_SOURCE_NOT_ALLOWED");
+      continue;
+    }
+    if (seen.has(dedupeKey)) {
+      reject("CAPTURE_DUPLICATE");
+      continue;
+    }
+    if (drafts.length >= limit) {
+      reject("CAPTURE_RATE_LIMITED");
+      continue;
+    }
+    seen.add(dedupeKey);
+    const redacted = redactCaptureText(event.text);
+    const draftId = `draft-${source}-${crypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 12)}`;
+    writeJson(path.join(stateDir, "drafts", `${draftId}.json`), {
+      draft_id: draftId,
+      kind: source,
+      status: "pending_review",
+      created_at: runDate.toISOString(),
+      content: redacted.text,
+      provenance: {
+        source,
+        source_id: sourceId,
+        message_id: messageId,
+        timestamp: event.timestamp || "",
+        author_handle_hash: crypto.createHash("sha256").update(String(event.author_handle || "")).digest("hex"),
+        dedupe_key: dedupeKey,
+        redaction_warnings: redacted.warnings,
+        original_source: {
+          input: inputPath,
+          source_id: sourceId,
+          message_id: messageId,
+        },
+      },
+      intended_target: {
+        type: "joplin_inbox",
+        notebook_id: "",
+        conflict_behavior: "manual_review",
+      },
+    });
+    drafts.push({ draft_id: draftId, dedupe_key: dedupeKey });
+  }
+  const evidence = {
+    run_id: runId,
+    source,
+    created_at: runDate.toISOString(),
+    accepted: drafts.length,
+    rejected: rejections.length,
+    drafts,
+    rejections,
+  };
+  writeJson(path.join(stateDir, "capture", "runs", `${runId}.json`), evidence);
+  return {
+    ok: true,
+    state: "capture_ingested",
+    run_id: runId,
+    accepted: drafts.length,
+    rejected: rejections.length,
+    drafts,
+    rejections,
+    path: path.join("capture", "runs", `${runId}.json`),
+  };
+}
+
 function validApprovalDraft(draftData) {
   return Boolean(
     draftData &&
@@ -1364,6 +1957,11 @@ export function help() {
     "  read <note-id>",
     "  links <note-id>",
     "  audit",
+    "  automate once",
+    "  automate status",
+    "  semantic build",
+    '  semantic query "問題"',
+    "  capture telegram|discord --input <path>",
     '  notify discord --message "訊息"',
     "  draft telegram|discord ...",
     "  approve <draft-id>",
@@ -1413,7 +2011,41 @@ export async function run(argv, env = process.env, deps = {}) {
   if (command === "audit") {
     return JSON.stringify(audit({ env }), null, 2);
   }
+  if (command === "automate") {
+    if (rest[0] === "once") {
+      const options = parseAutomateOnceOptions(rest.slice(1));
+      if (!options.ok) return JSON.stringify(options, null, 2);
+      return JSON.stringify(await automateOnce({ env, ...deps, ...options }), null, 2);
+    }
+    if (rest[0] === "status") {
+      return JSON.stringify(automateStatus({ env }), null, 2);
+    }
+    return JSON.stringify(
+      safeError("WIKI_AUTOMATE_COMMAND_UNKNOWN", "Unknown automate command."),
+      null,
+      2,
+    );
+  }
+  if (command === "semantic") {
+    if (rest[0] === "build") {
+      return JSON.stringify(await semanticBuild({ env, ...deps }), null, 2);
+    }
+    if (rest[0] === "query") {
+      return JSON.stringify(semanticQuery(rest.slice(1).join(" "), { env }), null, 2);
+    }
+    return JSON.stringify(
+      safeError("WIKI_SEMANTIC_COMMAND_UNKNOWN", "Unknown semantic command."),
+      null,
+      2,
+    );
+  }
+  if (command === "capture") {
+    return JSON.stringify(capture(rest[0], rest.slice(1), { env, ...deps }), null, 2);
+  }
   if (command === "draft") {
+    if (rest[0] === "llm-consolidate") {
+      return JSON.stringify(await llmConsolidate(rest.slice(1), { env, ...deps }), null, 2);
+    }
     if (rest[0] === "candidates") {
       return JSON.stringify(draftCandidates(rest.slice(1), { env, ...deps }), null, 2);
     }

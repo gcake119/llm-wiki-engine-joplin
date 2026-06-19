@@ -1237,6 +1237,582 @@ test("audit writes deterministic Error Book entries and kind counts", async () =
   ]);
 });
 
+test("automate once records review-gated maintenance pipeline artifacts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-automate-"));
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 5, 19, 0, 0, tick++));
+  const fetchCalls = [];
+  const fetchImpl = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/folders")) {
+      return { ok: true, json: async () => ({ items: [{ id: "folder-1" }] }) };
+    }
+    assert.match(pathname, /\/notes$/);
+    assert.notEqual(options.method, "POST");
+    return {
+      ok: true,
+      json: async () => ({
+        items: [
+          {
+            id: "note-1",
+            title: "Project Alpha",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha source",
+          },
+          {
+            id: "note-2",
+            title: "Project Alpha followup",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha followup",
+          },
+        ],
+        has_more: false,
+      }),
+    };
+  };
+
+  const result = JSON.parse(
+    await run(
+      ["automate", "once"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+      },
+      { fetchImpl, now },
+    ),
+  );
+  const latest = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "automation", "latest.json"), "utf8"),
+  );
+  const runArtifact = JSON.parse(
+    fs.readFileSync(path.join(stateDir, latest.path), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "automation_completed");
+  assert.deepEqual(
+    runArtifact.steps.map((step) => [step.name, step.status]),
+    [
+      ["sync", "completed"],
+      ["compile", "completed"],
+      ["draft candidates", "completed"],
+      ["audit", "completed"],
+    ],
+  );
+  assert.equal(runArtifact.exit_code, 0);
+  assert.deepEqual(runArtifact.steps.flatMap((step) => step.artifacts), [
+    "raw/notes-metadata.json",
+    "compiled/notes.json",
+    "compiled/pages.json",
+    "candidates/consolidation-candidates.json",
+    "audit/error-book.json",
+  ]);
+  assert.equal(latest.run_id, runArtifact.run_id);
+  assert.equal(fetchCalls.some((call) => call.options.method === "POST"), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "review")), false);
+});
+
+test("automate once records failure evidence and stops unsafe later steps", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-automate-"));
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 5, 19, 1, 0, tick++));
+  const fetchImpl = async (url, options = {}) => {
+    assert.notEqual(options.method, "POST");
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/folders")) {
+      return { ok: true, json: async () => ({ items: [{ id: "folder-1" }] }) };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        items: [
+          {
+            id: "note-1",
+            title: "Broken source",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Body removed before compile",
+          },
+        ],
+        has_more: false,
+      }),
+    };
+  };
+  const output = await run(
+    ["automate", "once"],
+    {
+      WIKI_STATE_DIR: stateDir,
+      WIKI_JOPLIN_TOKEN: "token-value",
+    },
+    {
+      fetchImpl,
+      now,
+      afterAutomationStep: (step) => {
+        if (step === "sync") {
+          fs.rmSync(path.join(stateDir, "raw", "notes", "note-1.md"));
+        }
+      },
+    },
+  );
+
+  const result = JSON.parse(output);
+  const latest = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "automation", "latest.json"), "utf8"),
+  );
+  const runArtifact = JSON.parse(
+    fs.readFileSync(path.join(stateDir, latest.path), "utf8"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "WIKI_RAW_BODY_MISSING");
+  assert.equal(runArtifact.exit_code, 1);
+  assert.deepEqual(
+    runArtifact.steps.map((step) => [step.name, step.status]),
+    [
+      ["sync", "completed"],
+      ["compile", "failed"],
+    ],
+  );
+  assert.equal(runArtifact.steps[1].error.code, "WIKI_RAW_BODY_MISSING");
+  assert.equal(fs.existsSync(path.join(stateDir, "candidates")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "audit")), false);
+});
+
+test("automate once returns busy without starting maintenance steps", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-automate-"));
+  fs.writeFileSync(path.join(stateDir, "lock"), "wiki compile\n");
+  let called = false;
+  const fetchImpl = async () => {
+    called = true;
+    throw new Error("busy automation must not call Joplin");
+  };
+
+  const result = JSON.parse(
+    await run(
+      ["automate", "once"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+      },
+      { fetchImpl },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "WIKI_BUSY");
+  assert.equal(called, false);
+  assert.equal(fs.existsSync(path.join(stateDir, "raw")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "compiled")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "candidates")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "audit")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "automation", "latest.json")), false);
+});
+
+test("automate once fails safely when state directory is unavailable", async () => {
+  const stateFile = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "wiki-automate-")),
+    "not-a-directory",
+  );
+  fs.writeFileSync(stateFile, "");
+
+  const result = JSON.parse(
+    await run(["automate", "once"], {
+      WIKI_STATE_DIR: stateFile,
+      WIKI_JOPLIN_TOKEN: "token-value",
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "WIKI_STATE_DIR_UNAVAILABLE");
+});
+
+test("periodic automate status reports missing state without creating artifacts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-periodic-"));
+  let called = false;
+  const result = JSON.parse(
+    await run(
+      ["automate", "status"],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        fetchImpl: async () => {
+          called = true;
+          throw new Error("status must not start background work");
+        },
+      },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "AUTOMATION_STATUS_MISSING");
+  assert.equal(called, false);
+  assert.equal(fs.existsSync(path.join(stateDir, "automation")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "semantic")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "capture")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "review")), false);
+});
+
+test("periodic automate status reads latest run and summary artifacts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-periodic-"));
+  const runArtifact = {
+    ok: true,
+    state: "automation_completed",
+    run_id: "run-1",
+    steps: [{ name: "sync", status: "completed" }],
+  };
+  const summary = {
+    run_id: "run-1",
+    created_at: "2026-06-19T00:00:00.000Z",
+    candidates_seen: 0,
+    drafts_created: 0,
+    draft_ids: [],
+    audit_total_errors: 0,
+    notification: null,
+    warnings: [],
+    next_actions: ["review_candidates"],
+  };
+  fs.mkdirSync(path.join(stateDir, "automation", "runs"), { recursive: true });
+  fs.mkdirSync(path.join(stateDir, "automation", "summaries"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "automation", "latest.json"),
+    JSON.stringify({ run_id: "run-1", path: "automation/runs/run-1.json" }),
+  );
+  fs.writeFileSync(
+    path.join(stateDir, "automation", "runs", "run-1.json"),
+    JSON.stringify(runArtifact),
+  );
+  fs.writeFileSync(
+    path.join(stateDir, "automation", "summaries", "run-1.json"),
+    JSON.stringify(summary),
+  );
+
+  const result = JSON.parse(await run(["automate", "status"], { WIKI_STATE_DIR: stateDir }));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "automation_status");
+  assert.equal(result.latest_run_id, "run-1");
+  assert.equal(result.latest_run_path, "automation/runs/run-1.json");
+  assert.deepEqual(result.latest_run, runArtifact);
+  assert.deepEqual(result.summary, {
+    ...summary,
+    path: "automation/summaries/run-1.json",
+  });
+});
+
+function periodicCandidateFetch(notes, calls = []) {
+  return async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (options.method === "POST") {
+      throw new Error("periodic automation must not write Joplin notes");
+    }
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/folders")) {
+      return { ok: true, json: async () => ({ items: [{ id: "folder-1" }] }) };
+    }
+    assert.match(pathname, /\/notes$/);
+    return {
+      ok: true,
+      json: async () => ({
+        items: notes,
+        has_more: false,
+      }),
+    };
+  };
+}
+
+test("periodic automate once --draft-top creates bounded top-N LLM drafts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-periodic-"));
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 5, 19, 2, 0, tick++));
+  const calls = [];
+  const result = JSON.parse(
+    await run(
+      ["automate", "once", "--draft-top", "2"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+      },
+      {
+        now,
+        fetchImpl: periodicCandidateFetch([
+          {
+            id: "note-alpha-1",
+            title: "Alpha Project part 1",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha source one.",
+          },
+          {
+            id: "note-alpha-2",
+            title: "Alpha Project part 2",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha source two.",
+          },
+          {
+            id: "note-beta-1",
+            title: "Beta Project part 1",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Beta source one.",
+          },
+          {
+            id: "note-beta-2",
+            title: "Beta Project part 2",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Beta source two.",
+          },
+          {
+            id: "note-gamma-1",
+            title: "Gamma Project part 1",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Gamma source one.",
+          },
+          {
+            id: "note-gamma-2",
+            title: "Gamma Project part 2",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Gamma source two.",
+          },
+        ], calls),
+        llmProvider: async ({ refs }) => ({
+          provider: "test-llm",
+          model: "test-model",
+          text: `Summary for ${refs.join(", ")}`,
+        }),
+      },
+    ),
+  );
+  const summary = JSON.parse(
+    fs.readFileSync(
+      path.join(stateDir, "automation", "summaries", `${result.run_id}.json`),
+      "utf8",
+    ),
+  );
+  const draftFiles = fs.readdirSync(path.join(stateDir, "drafts"));
+  const drafts = draftFiles.map((file) => (
+    JSON.parse(fs.readFileSync(path.join(stateDir, "drafts", file), "utf8"))
+  ));
+
+  assert.equal(result.ok, true);
+  assert.equal(summary.candidates_seen, 3);
+  assert.equal(summary.drafts_created, 2);
+  assert.equal(summary.draft_ids.length, 2);
+  assert.equal(typeof summary.audit_total_errors, "number");
+  assert.deepEqual(summary.warnings, []);
+  assert.deepEqual(summary.next_actions, ["review_drafts", "approve_or_reject"]);
+  assert.equal(drafts.length, 2);
+  assert.equal(drafts.every((draft) => draft.kind === "consolidate"), true);
+  assert.equal(drafts.every((draft) => draft.provenance.llm), true);
+  assert.equal(calls.some((call) => call.options.method === "POST"), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "review", "consolidation-reviews.json")), false);
+});
+
+test("periodic automate once rejects invalid --draft-top before maintenance", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-periodic-"));
+  let called = false;
+  const result = JSON.parse(
+    await run(
+      ["automate", "once", "--draft-top", "-1"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+      },
+      {
+        fetchImpl: async () => {
+          called = true;
+          throw new Error("invalid draft top must not start sync");
+        },
+      },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "AUTOMATION_DRAFT_TOP_INVALID");
+  assert.equal(called, false);
+  assert.equal(fs.existsSync(path.join(stateDir, "automation")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "raw")), false);
+});
+
+test("periodic automate once without --draft-top writes zero-draft summary", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-periodic-"));
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 5, 19, 3, 0, tick++));
+  const result = JSON.parse(
+    await run(
+      ["automate", "once"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+      },
+      {
+        now,
+        fetchImpl: periodicCandidateFetch([
+          {
+            id: "note-alpha-1",
+            title: "Alpha Project part 1",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha source one.",
+          },
+          {
+            id: "note-alpha-2",
+            title: "Alpha Project part 2",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha source two.",
+          },
+        ]),
+      },
+    ),
+  );
+  const summary = JSON.parse(
+    fs.readFileSync(
+      path.join(stateDir, "automation", "summaries", `${result.run_id}.json`),
+      "utf8",
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(summary.candidates_seen, 1);
+  assert.equal(summary.drafts_created, 0);
+  assert.deepEqual(summary.draft_ids, []);
+  assert.equal(typeof summary.audit_total_errors, "number");
+  assert.deepEqual(summary.warnings, []);
+  assert.deepEqual(summary.next_actions, ["review_candidates"]);
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("periodic automate once records LLM provider warning without failing maintenance", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-periodic-"));
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 5, 19, 4, 0, tick++));
+  const result = JSON.parse(
+    await run(
+      ["automate", "once", "--draft-top", "1"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+      },
+      {
+        now,
+        fetchImpl: periodicCandidateFetch([
+          {
+            id: "note-alpha-1",
+            title: "Alpha Project part 1",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha source one.",
+          },
+          {
+            id: "note-alpha-2",
+            title: "Alpha Project part 2",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Alpha source two.",
+          },
+        ]),
+        execFileSync: () => {
+          throw new Error("ollama missing");
+        },
+      },
+    ),
+  );
+  const summary = JSON.parse(
+    fs.readFileSync(
+      path.join(stateDir, "automation", "summaries", `${result.run_id}.json`),
+      "utf8",
+    ),
+  );
+  const runArtifact = JSON.parse(
+    fs.readFileSync(path.join(stateDir, result.path), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(runArtifact.ok, true);
+  assert.equal(runArtifact.state, "automation_completed");
+  assert.deepEqual(summary.warnings, ["LLM_PROVIDER_MISSING"]);
+  assert.equal(summary.drafts_created, 0);
+  assert.deepEqual(summary.draft_ids, []);
+  assert.deepEqual(summary.next_actions, ["configure_llm_provider", "review_candidates"]);
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("periodic automate once --notify records notification failure without failing run", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-periodic-"));
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 5, 19, 5, 0, tick++));
+  const discordMessages = [];
+  const result = JSON.parse(
+    await run(
+      ["automate", "once", "--draft-top", "0", "--notify"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_JOPLIN_TOKEN: "token-value",
+        DISCORD_SYSTEM_WEBHOOK_URL: "https://discord.com/api/webhooks/test/webhook",
+      },
+      {
+        now,
+        fetchImpl: async (url, options = {}) => {
+          const pathname = new URL(url).pathname;
+          if (String(url).startsWith("https://discord.com/api/webhooks/")) {
+            discordMessages.push(JSON.parse(options.body).content);
+            return { ok: false, json: async () => ({}) };
+          }
+          if (options.method === "POST") {
+            throw new Error("periodic notification must not write Joplin notes");
+          }
+          if (pathname.endsWith("/folders")) {
+            return { ok: true, json: async () => ({ items: [{ id: "folder-1" }] }) };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              items: [
+                {
+                  id: "note-alpha-1",
+                  title: "Alpha Project part 1",
+                  parent_id: "folder-1",
+                  updated_time: 123,
+                  body: "Sensitive raw body must stay out of notification.",
+                },
+                {
+                  id: "note-alpha-2",
+                  title: "Alpha Project part 2",
+                  parent_id: "folder-1",
+                  updated_time: 123,
+                  body: "Prompt-sized source body must stay local.",
+                },
+              ],
+              has_more: false,
+            }),
+          };
+        },
+      },
+    ),
+  );
+  const summary = JSON.parse(
+    fs.readFileSync(
+      path.join(stateDir, "automation", "summaries", `${result.run_id}.json`),
+      "utf8",
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(summary.notification.ok, false);
+  assert.equal(summary.notification.code, "DISCORD_NOTIFY_FAILED");
+  assert.equal(discordMessages.length, 1);
+  assert.doesNotMatch(discordMessages[0], /token-value/);
+  assert.doesNotMatch(discordMessages[0], /Sensitive raw body/);
+  assert.doesNotMatch(discordMessages[0], /Prompt-sized source body/);
+});
+
 test("draft creates reviewable filesystem drafts for telegram and discord", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-"));
   const now = () => new Date("2026-06-18T03:00:00.000Z");
@@ -1445,6 +2021,461 @@ test("draft consolidate rejects unsafe refs before writing drafts", async () => 
   assert.equal(result.code, "DRAFT_REF_UNSAFE");
   assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "secret.json")), false);
+});
+
+test("llm consolidation creates source-backed review drafts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-llm-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-a",
+          title: "Project memory",
+          parent_id: "folder-1",
+          updated_time: 123,
+          body_hash: "hash-a",
+          plain_text: "Hermes Wiki uses review gates before Joplin writeback.",
+        },
+      ],
+    })}\n`,
+  );
+  const llmProvider = async ({ prompt, refs }) => {
+    assert.match(prompt, /source-backed summary/i);
+    assert.deepEqual(refs, ["note:note-a"]);
+    return {
+      provider: "test",
+      model: "local-test",
+      text: [
+        "Summary: Hermes Wiki keeps writeback review-gated.",
+        "Recommendations: Merge related memory notes only after review.",
+        "Open questions: Confirm target notebook.",
+      ].join("\n"),
+    };
+  };
+
+  const result = JSON.parse(
+    await run(
+      [
+        "draft",
+        "llm-consolidate",
+        "--ref",
+        "note:note-a",
+        "Summarize review gate",
+      ],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        llmProvider,
+        now: () => new Date("2026-06-19T02:00:00.000Z"),
+      },
+    ),
+  );
+  const draft = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "drafts", `${result.draft_id}.json`), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "drafted");
+  assert.equal(draft.kind, "consolidate");
+  assert.equal(draft.status, "pending_review");
+  assert.match(draft.content, /Summary: Hermes Wiki keeps writeback review-gated/);
+  assert.match(draft.content, /Open questions: Confirm target notebook/);
+  assert.deepEqual(draft.provenance.refs, ["note:note-a"]);
+  assert.deepEqual(draft.provenance.llm, {
+    provider: "test",
+    model: "local-test",
+    prompt_version: "llm-consolidation-v1",
+    source_refs: ["note:note-a"],
+    created_at: "2026-06-19T02:00:00.000Z",
+    evidence_status: "source_backed",
+  });
+  assert.equal(fs.existsSync(path.join(stateDir, "review")), false);
+});
+
+test("llm consolidation fails closed when provider is missing", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-llm-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "joplin-123",
+          title: "Provider example",
+          plain_text: "Compiled source ref exists.",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      [
+        "draft",
+        "llm-consolidate",
+        "--ref",
+        "note:joplin-123",
+        "Summarize source",
+      ],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        execFileSync: () => {
+          throw Object.assign(new Error("missing ollama"), { code: "ENOENT" });
+        },
+      },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "LLM_PROVIDER_MISSING");
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("llm consolidation fails closed when source refs are missing", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-llm-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, "compiled", "notes.json"), `${JSON.stringify({ notes: [] })}\n`);
+  const llmProvider = async () => {
+    throw new Error("missing sources must not invoke provider");
+  };
+
+  const result = JSON.parse(
+    await run(
+      ["draft", "llm-consolidate", "--ref", "note:missing-note", "Summarize source"],
+      { WIKI_STATE_DIR: stateDir },
+      { llmProvider },
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "DRAFT_SOURCE_MISSING");
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("semantic build creates rebuildable source-ref index", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-semantic-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "pages.json"),
+    `${JSON.stringify({
+      pages: [
+        {
+          page_id: "page-memory",
+          title: "Project memory",
+          summary: "Review-gated writeback keeps Joplin authoritative.",
+          sections: [
+            {
+              heading: "Writeback",
+              text: "Approve-only writeback preserves Joplin as source of truth.",
+              sources: ["note-a"],
+            },
+          ],
+          links: [],
+          sources: ["note-a"],
+        },
+      ],
+    })}\n`,
+  );
+  const embeddingProvider = async ({ text }) => ({
+    model: "test-embedding",
+    dimensions: 3,
+    vector: [text.length, 1, 0],
+  });
+
+  const result = JSON.parse(
+    await run(
+      ["semantic", "build"],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        embeddingProvider,
+        now: () => new Date("2026-06-19T03:00:00.000Z"),
+      },
+    ),
+  );
+  const index = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "semantic", "index.json"), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "semantic_index_built");
+  assert.equal(index.generated_at, "2026-06-19T03:00:00.000Z");
+  assert.equal(index.chunks.length, 1);
+  assert.deepEqual(Object.keys(index.chunks[0]), [
+    "chunk_id",
+    "page_id",
+    "source_refs",
+    "snippet",
+    "content_hash",
+    "embedding",
+    "generated_at",
+  ]);
+  assert.equal(index.chunks[0].page_id, "page-memory");
+  assert.deepEqual(index.chunks[0].source_refs, ["note-a"]);
+  assert.equal(index.chunks[0].embedding.model, "test-embedding");
+  assert.equal(index.chunks[0].embedding.dimensions, 3);
+  assert.equal(fs.existsSync(path.join(stateDir, "raw")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "drafts")), false);
+});
+
+test("semantic query returns scored source refs and snippets", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-semantic-"));
+  fs.mkdirSync(path.join(stateDir, "semantic"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "semantic", "index.json"),
+    `${JSON.stringify({
+      generated_at: "2026-06-19T03:00:00.000Z",
+      source_hash: "hash",
+      chunks: [
+        {
+          chunk_id: "chunk-memory",
+          page_id: "page-memory",
+          source_refs: ["note-a"],
+          snippet: "Approve-only writeback preserves project memory.",
+          content_hash: "hash-a",
+          embedding: { model: "test-embedding", dimensions: 3 },
+          generated_at: "2026-06-19T03:00:00.000Z",
+        },
+        {
+          chunk_id: "chunk-garden",
+          page_id: "page-garden",
+          source_refs: ["note-b"],
+          snippet: "Garden watering log.",
+          content_hash: "hash-b",
+          embedding: { model: "test-embedding", dimensions: 3 },
+          generated_at: "2026-06-19T03:00:00.000Z",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(["semantic", "query", "project memory writeback"], {
+      WIKI_STATE_DIR: stateDir,
+    }),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "semantic_refs");
+  assert.deepEqual(result.results.map((item) => item.page_id), [
+    "page-memory",
+    "page-garden",
+  ]);
+  assert.deepEqual(result.results[0].source_refs, ["note-a"]);
+  assert.match(result.results[0].snippet, /Approve-only writeback/);
+  assert.equal(result.results[0].authoritative, false);
+});
+
+test("semantic query reports missing index without blocking keyword query", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-semantic-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-a",
+          title: "Project memory",
+          plain_text: "Project memory writeback remains review gated.",
+        },
+      ],
+    })}\n`,
+  );
+
+  const semantic = JSON.parse(
+    await run(["semantic", "query", "project memory writeback"], {
+      WIKI_STATE_DIR: stateDir,
+    }),
+  );
+  const keyword = JSON.parse(
+    await run(["query", "project memory writeback"], {
+      WIKI_STATE_DIR: stateDir,
+    }),
+  );
+
+  assert.equal(semantic.ok, false);
+  assert.equal(semantic.code, "SEMANTIC_INDEX_MISSING");
+  assert.equal(keyword.ok, true);
+  assert.equal(keyword.results[0].id, "note-a");
+});
+
+test("semantic build fails clearly when embedding provider is missing", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-semantic-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "pages.json"),
+    `${JSON.stringify({
+      pages: [
+        {
+          page_id: "page-memory",
+          title: "Project memory",
+          summary: "Review-gated writeback.",
+          sections: [],
+          sources: ["note-a"],
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(["semantic", "build"], { WIKI_STATE_DIR: stateDir }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "EMBEDDING_PROVIDER_MISSING");
+  assert.equal(fs.existsSync(path.join(stateDir, "semantic", "index.json")), false);
+});
+
+test("capture ingestion creates allowlisted redacted filesystem drafts", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-capture-"));
+  const inputPath = path.join(stateDir, "telegram-events.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-1",
+          author_handle: "@alice",
+          timestamp: "2026-06-19T04:00:00.000Z",
+          text: "Remember token sk-test-123 and email me@example.com for project memory.",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["capture", "telegram", "--input", inputPath],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_CAPTURE_TELEGRAM_ALLOWLIST: "chat-allowed",
+      },
+      { now: () => new Date("2026-06-19T04:01:00.000Z") },
+    ),
+  );
+  const draft = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "drafts", `${result.drafts[0].draft_id}.json`), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "capture_ingested");
+  assert.equal(result.drafts.length, 1);
+  assert.equal(draft.kind, "telegram");
+  assert.equal(draft.provenance.source, "telegram");
+  assert.equal(draft.provenance.source_id, "chat-allowed");
+  assert.equal(draft.provenance.message_id, "msg-1");
+  assert.equal(draft.provenance.timestamp, "2026-06-19T04:00:00.000Z");
+  assert.match(draft.provenance.author_handle_hash, /^[a-f0-9]{64}$/);
+  assert.equal(draft.provenance.dedupe_key, "telegram:chat-allowed:msg-1");
+  assert.deepEqual(draft.provenance.redaction_warnings, ["token", "email"]);
+  assert.doesNotMatch(draft.content, /sk-test-123|me@example.com/);
+  assert.match(draft.content, /\[REDACTED_TOKEN\]/);
+  assert.match(draft.content, /\[REDACTED_EMAIL\]/);
+  assert.equal(fs.existsSync(path.join(stateDir, "review")), false);
+});
+
+test("capture ingestion records disallowed and duplicate rejection evidence", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-capture-"));
+  const inputPath = path.join(stateDir, "telegram-events.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-unknown",
+          message_id: "msg-1",
+          author_handle: "@alice",
+          timestamp: "2026-06-19T04:00:00.000Z",
+          text: "Disallowed source",
+        },
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-2",
+          author_handle: "@alice",
+          timestamp: "2026-06-19T04:01:00.000Z",
+          text: "First accepted",
+        },
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-2",
+          author_handle: "@alice",
+          timestamp: "2026-06-19T04:01:30.000Z",
+          text: "Duplicate rejected",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["capture", "telegram", "--input", inputPath],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_CAPTURE_TELEGRAM_ALLOWLIST: "chat-allowed",
+      },
+      { now: () => new Date("2026-06-19T04:02:00.000Z") },
+    ),
+  );
+  const evidence = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "capture", "runs", `${result.run_id}.json`), "utf8"),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.accepted, 1);
+  assert.equal(result.rejected, 2);
+  assert.equal(fs.readdirSync(path.join(stateDir, "drafts")).length, 1);
+  assert.deepEqual(evidence.rejections.map((item) => item.reason), [
+    "CAPTURE_SOURCE_NOT_ALLOWED",
+    "CAPTURE_DUPLICATE",
+  ]);
+  assert.deepEqual(evidence.rejections.map((item) => item.dedupe_key), [
+    "telegram:chat-unknown:msg-1",
+    "telegram:chat-allowed:msg-2",
+  ]);
+});
+
+test("capture ingestion applies rate limit evidence", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-capture-"));
+  const inputPath = path.join(stateDir, "discord-events.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "channel-1",
+          message_id: "msg-1",
+          author_handle: "alice",
+          timestamp: "2026-06-19T04:00:00.000Z",
+          text: "First accepted",
+        },
+        {
+          source_id: "channel-1",
+          message_id: "msg-2",
+          author_handle: "alice",
+          timestamp: "2026-06-19T04:01:00.000Z",
+          text: "Rate limited",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["capture", "discord", "--input", inputPath],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_CAPTURE_DISCORD_ALLOWLIST: "channel-1",
+        WIKI_CAPTURE_RATE_LIMIT: "1",
+      },
+      { now: () => new Date("2026-06-19T04:03:00.000Z") },
+    ),
+  );
+
+  assert.equal(result.accepted, 1);
+  assert.equal(result.rejected, 1);
+  assert.equal(result.rejections[0].reason, "CAPTURE_RATE_LIMITED");
+  assert.equal(fs.readdirSync(path.join(stateDir, "drafts")).length, 1);
 });
 
 test("draft candidates returns bounded candidates from compiled notes", async () => {
@@ -1929,6 +2960,90 @@ test("approve preserves local draft when Joplin writeback fails", async () => {
   assert.equal(fs.existsSync(draftPath), true);
 });
 
+test("non-approve sedimentation commands never write to Joplin", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-writeback-"));
+  const fetchCalls = [];
+  const fetchImpl = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), options });
+    if (options.method === "POST") {
+      throw new Error("non-approve commands must not write Joplin notes");
+    }
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith("/folders")) {
+      return { ok: true, json: async () => ({ items: [{ id: "folder-1" }] }) };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        items: [
+          {
+            id: "note-a",
+            title: "Project Memory",
+            parent_id: "folder-1",
+            updated_time: 123,
+            body: "Review-gated memory source.",
+          },
+        ],
+        has_more: false,
+      }),
+    };
+  };
+  await run(
+    ["automate", "once"],
+    { WIKI_STATE_DIR: stateDir, WIKI_JOPLIN_TOKEN: "token-value" },
+    { fetchImpl, now: () => new Date("2026-06-19T05:00:00.000Z") },
+  );
+  await run(
+    ["draft", "llm-consolidate", "--ref", "note:note-a", "Summarize"],
+    { WIKI_STATE_DIR: stateDir },
+    {
+      llmProvider: async () => ({
+        provider: "test",
+        model: "local-test",
+        text: "Summary: review-gated.",
+      }),
+      now: () => new Date("2026-06-19T05:01:00.000Z"),
+    },
+  );
+  await run(
+    ["semantic", "build"],
+    { WIKI_STATE_DIR: stateDir },
+    {
+      embeddingProvider: async ({ text }) => ({
+        model: "test-embedding",
+        dimensions: 1,
+        vector: [text.length],
+      }),
+      now: () => new Date("2026-06-19T05:02:00.000Z"),
+    },
+  );
+  const inputPath = path.join(stateDir, "capture-events.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-1",
+          author_handle: "@alice",
+          timestamp: "2026-06-19T05:03:00.000Z",
+          text: "Captured memory",
+        },
+      ],
+    })}\n`,
+  );
+  await run(
+    ["capture", "telegram", "--input", inputPath],
+    {
+      WIKI_STATE_DIR: stateDir,
+      WIKI_CAPTURE_TELEGRAM_ALLOWLIST: "chat-allowed",
+    },
+    { now: () => new Date("2026-06-19T05:04:00.000Z") },
+  );
+
+  assert.equal(fetchCalls.some((call) => call.options.method === "POST"), false);
+});
+
 test("notify discord requires a message", async () => {
   const result = JSON.parse(
     await run(["notify", "discord"], {
@@ -2007,6 +3122,40 @@ test("foreground and capture commands do not create job files", async () => {
     await run(args, { WIKI_STATE_DIR: stateDir, WIKI_JOPLIN_TOKEN: "token-value" });
   }
 
+  assert.equal(fs.existsSync(path.join(stateDir, "lock")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "status.json")), false);
+});
+
+test("foreground read and query do not trigger hidden background work", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-foreground-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.mkdirSync(path.join(stateDir, "raw", "notes"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-a",
+          title: "Hermes memory",
+          plain_text: "Hermes memory stays source backed.",
+        },
+      ],
+    })}\n`,
+  );
+  fs.writeFileSync(path.join(stateDir, "raw", "notes", "note-a.md"), "Hermes memory stays source backed.");
+
+  const queryResult = JSON.parse(
+    await run(["query", "Hermes memory"], { WIKI_STATE_DIR: stateDir }),
+  );
+  const readResult = JSON.parse(
+    await run(["read", "note-a"], { WIKI_STATE_DIR: stateDir }),
+  );
+
+  assert.equal(queryResult.ok, true);
+  assert.equal(readResult.ok, true);
+  for (const dirName of ["automation", "drafts", "semantic", "capture", "review", "audit"]) {
+    assert.equal(fs.existsSync(path.join(stateDir, dirName)), false, dirName);
+  }
   assert.equal(fs.existsSync(path.join(stateDir, "lock")), false);
   assert.equal(fs.existsSync(path.join(stateDir, "status.json")), false);
 });
