@@ -5,6 +5,7 @@ import { execFileSync as nodeExecFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const COMMANDS = new Set([
   "status",
@@ -213,6 +214,7 @@ function queryRerankPrompt(question, candidates, terms) {
     "Fill the JSON array template below by replacing only the values.",
     "Return only the completed JSON array. Do not explain, summarize, or wrap the result in markdown.",
     "Copy ref values exactly from candidates. relevance must be a number from 0 to 1.",
+    "Write the reason field in Traditional Chinese（繁體中文）. Use English or original text only for technical terms, product names, note titles, refs, and necessary names.",
     "[{\"ref\":\"note:<copy candidate ref>\",\"relevance\":0.0,\"reason\":\"short reason\"}]",
     JSON.stringify({
     task: "rerank wiki query candidates",
@@ -233,7 +235,7 @@ function queryRerankPrompt(question, candidates, terms) {
 function parseRerankRows(text, knownRefs) {
   let rows;
   try {
-    rows = JSON.parse(extractJsonArray(text));
+    rows = normalizeRerankRows(JSON.parse(extractJsonValue(text)));
   } catch {
     return [];
   }
@@ -248,13 +250,33 @@ function parseRerankRows(text, knownRefs) {
     .filter((row) => row.relevance > 0);
 }
 
-function extractJsonArray(text) {
-  const fenced = text.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/i);
+function normalizeRerankRows(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value?.results)) return value.results;
+  if (
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && typeof value.ref === "string"
+  ) {
+    return [value];
+  }
+  return [];
+}
+
+function extractJsonValue(text) {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced) return fenced[1];
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
-  if (start < 0 || end <= start) return text;
-  return text.slice(start, end + 1);
+  if (start >= 0 && end > start) return text.slice(start, end + 1);
+  const objectStart = text.indexOf("{");
+  const objectEnd = text.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    return text.slice(objectStart, objectEnd + 1);
+  }
+  return text;
 }
 
 function rerankUnavailable() {
@@ -2235,6 +2257,15 @@ export async function run(argv, env = process.env, deps = {}) {
   return JSON.stringify(notImplemented(command), null, 2);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isDirectExecution(metaUrl, argvPath = process.argv[1]) {
+  if (!argvPath) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(metaUrl)) === fs.realpathSync(argvPath);
+  } catch {
+    return metaUrl === `file://${argvPath}`;
+  }
+}
+
+if (isDirectExecution(import.meta.url)) {
   console.log(await run(process.argv.slice(2)));
 }

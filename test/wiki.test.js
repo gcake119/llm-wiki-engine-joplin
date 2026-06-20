@@ -120,6 +120,17 @@ test("query requires a question", async () => {
   assert.equal(await run(["query"]), "請在 wiki query 後面加上問題。");
 });
 
+test("cli prints output when executed through a package-manager symlink", () => {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-bin-"));
+  const binPath = path.join(binDir, "wiki");
+  fs.symlinkSync(path.join(projectRoot, "src", "wiki.js"), binPath);
+
+  const result = spawnSync("node", [binPath, "query"], { encoding: "utf8", timeout: 5000 });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /請在 wiki query 後面加上問題。/);
+});
+
 test("status returns fresh state when status file is absent", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-status-"));
   const result = JSON.parse(await run(["status"], { WIKI_STATE_DIR: stateDir }));
@@ -1111,6 +1122,107 @@ test("query rerank prompt only includes bounded candidate metadata", async () =>
   assert.doesNotMatch(prompt, /WIKI_JOPLIN_TOKEN/);
 });
 
+test("query rerank prompt asks for Traditional Chinese reasons", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-memory",
+          title: "Hermes Wiki Engine",
+          parent_id: "folder-memory",
+          plain_text: "Joplin 長期記憶 system for Hermes wiki engine",
+        },
+      ],
+    })}\n`,
+  );
+  let prompt = "";
+
+  await run(
+    ["query", "Hermes", "wiki", "engine", "Joplin", "長期記憶", "--rerank-llm"],
+    { WIKI_STATE_DIR: stateDir, WIKI_LLM_MODEL: "local-test" },
+    {
+      llmProvider: async ({ prompt: value }) => {
+        prompt = value;
+        return {
+          provider: "test",
+          model: "local-test",
+          text: JSON.stringify([{ ref: "note:note-memory", relevance: 1, reason: "top" }]),
+        };
+      },
+    },
+  );
+
+  assert.match(prompt, /Traditional Chinese/i);
+  assert.match(prompt, /繁體中文/);
+  assert.match(prompt, /technical terms, product names, note titles, refs, and necessary names/i);
+  assert.match(prompt, /Return only the completed JSON array/);
+  assert.doesNotMatch(prompt, /answer the question/i);
+});
+
+test("query rerank accepts common Ollama JSON wrapper shapes", async () => {
+  const cases = [
+    {
+      name: "single object",
+      text: JSON.stringify({ ref: "note:note-memory", relevance: 0.9, reason: "single" }),
+      reason: "single",
+    },
+    {
+      name: "data array",
+      text: JSON.stringify({
+        data: [{ ref: "note:note-memory", relevance: 0.8, reason: "data" }],
+      }),
+      reason: "data",
+    },
+    {
+      name: "results array",
+      text: JSON.stringify({
+        results: [{ ref: "note:note-memory", relevance: 0.7, reason: "results" }],
+      }),
+      reason: "results",
+    },
+  ];
+
+  for (const item of cases) {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+    fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, "compiled", "notes.json"),
+      `${JSON.stringify({
+        notes: [
+          {
+            id: "note-memory",
+            title: "Hermes Wiki Engine",
+            parent_id: "folder-memory",
+            plain_text: "Joplin 長期記憶 system for Hermes wiki engine",
+          },
+        ],
+      })}\n`,
+    );
+
+    const result = JSON.parse(
+      await run(
+        ["query", "Hermes", "wiki", "engine", "Joplin", "長期記憶", "--rerank-llm"],
+        { WIKI_STATE_DIR: stateDir, WIKI_LLM_MODEL: "local-test" },
+        {
+          llmProvider: async () => ({
+            provider: "test",
+            model: "local-test",
+            text: item.text,
+          }),
+        },
+      ),
+    );
+
+    assert.equal(result.ok, true, item.name);
+    assert.equal(result.state, "reranked", item.name);
+    assert.equal(result.results[0].ref, "note:note-memory", item.name);
+    assert.equal(result.results[0].rerank_reason, item.reason, item.name);
+  }
+});
+
 test("query rerank fails closed when local LLM output is unavailable", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
   fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
@@ -1161,8 +1273,23 @@ test("query rerank fails closed when local LLM output is unavailable", async () 
       },
     ),
   );
+  const wrappedUnknownRefs = JSON.parse(
+    await run(
+      ["query", "Hermes", "memory", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        llmProvider: async () => ({
+          provider: "test",
+          model: "local-test",
+          text: JSON.stringify({
+            data: [{ ref: "note:unknown", relevance: 1, reason: "bad" }],
+          }),
+        }),
+      },
+    ),
+  );
 
-  for (const result of [missing, invalidJson, unknownRefs]) {
+  for (const result of [missing, invalidJson, unknownRefs, wrappedUnknownRefs]) {
     assert.equal(result.ok, false);
     assert.equal(result.code, "LLM_RERANK_UNAVAILABLE");
     assert.doesNotMatch(JSON.stringify(result), /token-value|Hermes memory source body|prompt|stack/i);
