@@ -3,9 +3,9 @@
 ## Local Setup
 
 ```zsh
-npm install
+pnpm install
 cp .env.example .env
-npm test
+pnpm test
 ```
 
 測試不需要真實 Joplin token。不要把 `.env`、state directory、raw cache 或 generated drafts 放進 git。
@@ -13,6 +13,7 @@ npm test
 ## Development Rules
 
 - 使用 Node.js 20 或更新版本。
+- 使用 pnpm 11 或更新版本，避免不同專案重複佔用依賴空間。
 - 優先使用 Node stdlib，不為小工具新增 dependency。
 - 保持 `wiki` CLI 小而直接。
 - 前台記憶回答必須走 `wiki query`、`wiki read`、`wiki links` 的 source-backed evidence。

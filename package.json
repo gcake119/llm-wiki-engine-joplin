@@ -4,6 +4,7 @@
   "description": "Local-first Joplin wiki engine for source-backed AI memory.",
   "license": "MIT",
   "type": "module",
+  "packageManager": "pnpm@11.5.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gcake119/llm-wiki-engine-joplin.git"

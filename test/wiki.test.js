@@ -14,6 +14,7 @@ test("package metadata is ready for the public CLI package", () => {
   assert.equal(pkg.private, undefined);
   assert.equal(pkg.description, "Local-first Joplin wiki engine for source-backed AI memory.");
   assert.equal(pkg.license, "MIT");
+  assert.equal(pkg.packageManager, "pnpm@11.5.0");
   assert.deepEqual(pkg.repository, {
     type: "git",
     url: "git+https://github.com/gcake119/llm-wiki-engine-joplin.git",
@@ -37,7 +38,7 @@ test("install script is published and documented", () => {
 
   assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
   assert.match(installScript, /codeload\.github\.com/);
-  assert.match(installScript, /npm install -g/);
+  assert.match(installScript, /pnpm add -g/);
   assert.match(installScript, /\/dev\/tty/);
   assert.match(installScript, /Press Enter to accept a suggested value/);
   assert.match(installScript, /Suggested: %s/);
@@ -71,7 +72,7 @@ test("environment example uses safe placeholders", () => {
 test("README documents the portable install path and writeback gate", () => {
   const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8");
   for (const text of [
-    "npm install -g",
+    "pnpm add -g",
     "cp .env.example .env",
     "WIKI_STATE_DIR",
     "WIKI_JOPLIN_API_URL",

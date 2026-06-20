@@ -19,6 +19,7 @@ Hermes 之外也能使用：你可以把它當成 standalone Joplin local-first 
 需求：
 
 - Node.js 20 或更新版本。
+- pnpm 11 或更新版本。
 - Joplin Desktop 開啟 Data API。
 - 一組 Joplin Data API token。
 
@@ -65,7 +66,8 @@ curl -fsSL https://raw.githubusercontent.com/gcake119/llm-wiki-engine-joplin/mai
 從 checkout 安裝：
 
 ```zsh
-npm install -g .
+pnpm install
+pnpm add -g .
 cp .env.example .env
 ```
 
@@ -181,8 +183,8 @@ Hermes runtime 可以使用絕對路徑 `/Users/hermes/.local/bin/wiki`；一般
 ## Development
 
 ```zsh
-npm test
-npm pack --dry-run
+pnpm test
+pnpm pack --dry-run
 spectra validate open-source-file-structure
 ```
 

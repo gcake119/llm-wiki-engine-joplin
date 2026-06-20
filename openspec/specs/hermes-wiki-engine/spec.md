@@ -1646,7 +1646,7 @@ tests:
 ---
 ### Requirement: Open-source package metadata is complete
 
-The Hermes Wiki Engine SHALL provide package metadata suitable for local npm packaging and installation as a CLI package without requiring a private Hermes runtime.
+The Hermes Wiki Engine SHALL provide package metadata suitable for local pnpm packaging and installation as a CLI package without requiring a private Hermes runtime.
 
 #### Scenario: Package metadata names the public repository
 
@@ -1694,7 +1694,7 @@ The Hermes Wiki Engine SHALL document a portable open-source installation and se
 #### Scenario: File structure guide explains ownership boundaries
 
 - **WHEN** a contributor reads the open-source file structure guide
-- **THEN** the guide SHALL identify root project docs, CLI source, tests, Spectra specs, decision docs, environment examples, npm packaging controls, and Hermes packaging guidance as separate responsibility areas
+- **THEN** the guide SHALL identify root project docs, CLI source, tests, Spectra specs, decision docs, environment examples, pnpm packaging controls, and Hermes packaging guidance as separate responsibility areas
 - **AND** it SHALL explain which areas are public package surface and which areas are repo governance or deployment guidance
 
 

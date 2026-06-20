@@ -75,7 +75,7 @@ Existing local memory refs
 
 ## Open-Source Package Layout
 
-公開 repo 是 `https://github.com/gcake119/llm-wiki-engine-joplin`。開源入口採 npm CLI package 形狀：`package.json` 宣告 `wiki` bin、Node engine、repository、license、keywords 與 package file list；不需要 build step、installer framework、daemon、HTTP server 或 GUI。
+公開 repo 是 `https://github.com/gcake119/llm-wiki-engine-joplin`。開源入口採 Node.js CLI package 形狀，並以 pnpm 作為預設 package manager：`package.json` 宣告 `packageManager`、`wiki` bin、Node engine、repository、license、keywords 與 package file list；不需要 build step、installer framework、daemon、HTTP server 或 GUI。
 
 一般使用者的 portable profile 以 `WIKI_STATE_DIR` 指向 `$HOME/.local/state/hermes-wiki-engine`，並透過 `.env.example` 設定 `WIKI_JOPLIN_API_URL` 與 `WIKI_JOPLIN_TOKEN`。Hermes profile 仍可使用 `/Users/hermes/.local/bin/wiki` 與 `/Users/hermes/knowledge`，但這是進階部署路徑，不是開源 quickstart 前提。
 
@@ -84,7 +84,7 @@ Existing local memory refs
 - `README.md`：portable quickstart、command overview、Joplin writeback boundary。
 - `.env.example`：placeholder-only local configuration，不含真實 secret。
 - `SECURITY.md`：token、webhook、allowlist、state artifacts 與 approve-only writeback 邊界。
-- `CONTRIBUTING.md`：Node.js、node:test、Spectra workflow 與 secret hygiene。
+- `CONTRIBUTING.md`：Node.js、pnpm、node:test、Spectra workflow 與 secret hygiene。
 - `docs/open-source-file-structure.md`：public package surface、runtime artifacts、repo governance、Hermes packaging 的分工。
 - `packaging/hermes/skills/wiki/SKILL.md`：Hermes agent profile，仍必須使用 `query/read/links` 作為 foreground answer path，不能把 draft 或 semantic score 當成正式記憶。
 

@@ -4,10 +4,10 @@
 
 ## Public Package Surface
 
-- `package.json`：npm CLI metadata、`wiki` bin、Node engine、publish file list。
+- `package.json`：Node CLI package metadata、pnpm package manager declaration、`wiki` bin、Node engine、publish file list。
 - `src/wiki.js`：CLI runtime。它是唯一 Node entrypoint。
 - `README.md`：一般使用者 quickstart、command overview、安全邊界。
-- `scripts/install.sh`：公開 repo 的 one-line install 入口，下載 source tarball 後用 `npm install -g` 安裝 CLI。
+- `scripts/install.sh`：公開 repo 的 one-line install 入口，下載 source tarball 後用 `pnpm add -g` 安裝 CLI。
 - `.env.example`：portable local configuration placeholder，不含真實 secret。
 - `LICENSE`：開源授權。
 - `SECURITY.md`：本機 secret、Joplin Data API、approve-only writeback 邊界。
@@ -51,8 +51,8 @@ Hermes profile 可以使用絕對路徑 `/Users/hermes/.local/bin/wiki`，但公
 發布前先跑：
 
 ```zsh
-npm test
-npm pack --dry-run
+pnpm test
+pnpm pack --dry-run
 ```
 
 檢查 tarball 應包含 source、docs、tests、specs 與 packaging guidance；不應包含 `.env`、state directory、raw cache、generated drafts、webhook URL 或 token。

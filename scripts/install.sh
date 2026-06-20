@@ -16,7 +16,7 @@ need curl
 need sed
 need tar
 need node
-need npm
+need pnpm
 
 node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 20) { console.error("Node.js 20 or newer is required."); process.exit(1); }'
 
@@ -31,7 +31,7 @@ archive_path="$tmp_dir/source.tar.gz"
 echo "Installing Hermes Wiki Engine from ${repo}@${ref}..."
 curl -fsSL "$archive_url" -o "$archive_path"
 tar -xzf "$archive_path" -C "$tmp_dir" --strip-components=1
-npm install -g "$tmp_dir"
+pnpm add -g "$tmp_dir"
 
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hermes-wiki-engine"
 config_file="$config_dir/env"
