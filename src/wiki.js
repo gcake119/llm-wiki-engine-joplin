@@ -209,7 +209,12 @@ function rerankSnippet(note, terms) {
 }
 
 function queryRerankPrompt(question, candidates, terms) {
-  return JSON.stringify({
+  return [
+    "Fill the JSON array template below by replacing only the values.",
+    "Return only the completed JSON array. Do not explain, summarize, or wrap the result in markdown.",
+    "Copy ref values exactly from candidates. relevance must be a number from 0 to 1.",
+    "[{\"ref\":\"note:<copy candidate ref>\",\"relevance\":0.0,\"reason\":\"short reason\"}]",
+    JSON.stringify({
     task: "rerank wiki query candidates",
     prompt_version: QUERY_RERANK_PROMPT_VERSION,
     query: question,
@@ -221,13 +226,14 @@ function queryRerankPrompt(question, candidates, terms) {
       snippet: rerankSnippet(note, terms),
       score,
     })),
-  }, null, 2);
+    }, null, 2),
+  ].join("\n\n");
 }
 
 function parseRerankRows(text, knownRefs) {
   let rows;
   try {
-    rows = JSON.parse(text);
+    rows = JSON.parse(extractJsonArray(text));
   } catch {
     return [];
   }
@@ -240,6 +246,15 @@ function parseRerankRows(text, knownRefs) {
       reason: String(row.reason || "").slice(0, 160),
     }))
     .filter((row) => row.relevance > 0);
+}
+
+function extractJsonArray(text) {
+  const fenced = text.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/i);
+  if (fenced) return fenced[1];
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start < 0 || end <= start) return text;
+  return text.slice(start, end + 1);
 }
 
 function rerankUnavailable() {
@@ -520,6 +535,7 @@ export async function query(
     env = process.env,
     rerankLlm = false,
     llmProvider,
+    fetchImpl = globalThis.fetch,
     execFileSync = nodeExecFileSync,
   } = {},
 ) {
@@ -553,8 +569,7 @@ export async function query(
     };
   }
   if (rerankLlm) {
-    const provider = llmProvider || (env.WIKI_LLM_MODEL ? defaultLlmProvider(env, execFileSync) : null);
-    if (!provider) return rerankUnavailable();
+    const provider = llmProvider || defaultQueryRerankProvider(env, { fetchImpl, execFileSync });
     const knownRefs = new Set(candidates.map(({ note }) => `note:${note.id}`));
     let llmResult;
     try {
@@ -1561,13 +1576,47 @@ function defaultLlmProvider(env, execFileSync = nodeExecFileSync) {
   return async ({ prompt, refs }) => ({
     provider: "ollama",
     model,
-    text: execFileSync("ollama", ["call", model], {
+    text: execFileSync("ollama", ["run", model], {
       input: prompt,
       encoding: "utf8",
       timeout: 120000,
     }).trim(),
     refs,
   });
+}
+
+function defaultQueryRerankProvider(env, { fetchImpl = globalThis.fetch, execFileSync = nodeExecFileSync } = {}) {
+  const model = env.WIKI_LLM_MODEL || "gemma3:12b";
+  return async ({ prompt, refs }) => {
+    if (typeof fetchImpl === "function") {
+      try {
+        const response = await fetchImpl(
+          new URL("/api/generate", env.WIKI_OLLAMA_API_URL || "http://127.0.0.1:11434"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model, prompt, stream: false, format: "json" }),
+          },
+        );
+        if (response.ok) {
+          const data = await response.json();
+          return { provider: "ollama", model, text: String(data.response || ""), refs };
+        }
+      } catch {
+        // Fall through to the CLI path for older local setups.
+      }
+    }
+    return {
+      provider: "ollama",
+      model,
+      text: execFileSync("ollama", ["run", model], {
+        input: prompt,
+        encoding: "utf8",
+        timeout: 120000,
+      }).trim(),
+      refs,
+    };
+  };
 }
 
 export async function llmConsolidate(

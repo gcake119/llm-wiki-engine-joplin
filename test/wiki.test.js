@@ -979,6 +979,89 @@ test("query reranks bounded keyword candidates with local LLM", async () => {
   assert.equal(result.rerank.prompt_version, "query-rerank-v1");
 });
 
+test("query rerank accepts fenced JSON array from local LLM", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-memory",
+          title: "Hermes Wiki Engine",
+          parent_id: "folder-memory",
+          plain_text: "Hermes long-term memory",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["query", "Hermes", "memory", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir, WIKI_LLM_MODEL: "local-test" },
+      {
+        llmProvider: async () => ({
+          provider: "test",
+          model: "local-test",
+          text: "```json\n[{\"ref\":\"note:note-memory\",\"relevance\":1,\"reason\":\"memory\"}]\n```",
+        }),
+      },
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "reranked");
+  assert.equal(result.results[0].ref, "note:note-memory");
+});
+
+test("query rerank uses Ollama API JSON mode by default", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-memory",
+          title: "Hermes Wiki Engine",
+          parent_id: "folder-memory",
+          plain_text: "Hermes long-term memory",
+        },
+      ],
+    })}\n`,
+  );
+  let body;
+
+  const result = JSON.parse(
+    await run(
+      ["query", "Hermes", "memory", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir, WIKI_LLM_MODEL: "local-test" },
+      {
+        fetchImpl: async (_url, options) => {
+          body = JSON.parse(options.body);
+          return {
+            ok: true,
+            json: async () => ({
+              response: JSON.stringify([
+                { ref: "note:note-memory", relevance: 1, reason: "memory" },
+              ]),
+            }),
+          };
+        },
+      },
+    ),
+  );
+
+  assert.equal(body.model, "local-test");
+  assert.equal(body.stream, false);
+  assert.equal(body.format, "json");
+  assert.match(body.prompt, /\[\{"ref":"note:<copy candidate ref>","relevance":0\.0,"reason":"short reason"\}\]/);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "reranked");
+  assert.equal(result.results[0].ref, "note:note-memory");
+});
+
 test("query rerank prompt only includes bounded candidate metadata", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
   fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
@@ -1044,7 +1127,18 @@ test("query rerank fails closed when local LLM output is unavailable", async () 
   );
 
   const missing = JSON.parse(
-    await run(["query", "Hermes", "memory", "--rerank-llm"], { WIKI_STATE_DIR: stateDir }),
+    await run(
+      ["query", "Hermes", "memory", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        fetchImpl: null,
+        execFileSync: (command, args) => {
+          assert.equal(command, "ollama");
+          assert.deepEqual(args, ["run", "gemma3:12b"]);
+          throw new Error("missing ollama");
+        },
+      },
+    ),
   );
   const invalidJson = JSON.parse(
     await run(
