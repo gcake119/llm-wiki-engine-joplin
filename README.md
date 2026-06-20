@@ -120,16 +120,35 @@ wiki automate status
 
 自動化不會呼叫 `wiki approve`，不會寫入 Joplin notes，也不會替你永久決定 target notebook。若只想刷新 evidence 與 candidates，省略 `--draft-top` 或使用 `--draft-top 0`。
 
+### macOS LaunchDaemon
+
+Hermes deployment 可以用 repo 內建 helper 把一輪整理流程安裝成 macOS system LaunchDaemon。自動排程是預設值：installer 會預設載入 `com.hermes.wiki-automate`，並以 `hermes` user 每天 03:30 執行 `wiki automate once`：
+
+```zsh
+sudo scripts/install-macos-launchdaemon.sh
+```
+
+安裝後可以用 deterministic 指令確認 launchd 與 wiki automation 狀態：
+
+```zsh
+sudo launchctl print system/com.hermes.wiki-automate
+sudo launchctl kickstart -k system/com.hermes.wiki-automate
+sudo -iu hermes zsh -lc 'source "$HOME/.config/hermes-knowledge/env" && "$HOME/.local/bin/wiki" automate status'
+sudo -iu hermes zsh -lc 'find "$HOME/knowledge/automation/runs" -type f -mtime -1 -print | tail -5'
+```
+
+helper 只安裝 `/Users/<user>/bin/wiki-automate-once` 與 `/Library/LaunchDaemons/com.hermes.wiki-automate.plist`。plist 不保存 Joplin token；wrapper 只 source 既有 env file 並執行 `wiki automate once`。如需覆寫 user、label 或時間，可在執行 installer 時設定 `HWE_AUTOMATION_USER`、`HWE_AUTOMATION_LABEL`、`HWE_AUTOMATION_HOUR`、`HWE_AUTOMATION_MINUTE`。如只想產生檔案但暫不載入 launchd，可設定 `HWE_AUTOMATION_LOAD=0`。
+
 ## Non-Hermes Usage
 
 這個 CLI 也適合 Hermes 之外的本機使用場景：
 
 - 個人 Joplin 筆記庫的 local-first search／read／link layer。
 - 其他 AI agent 的 source-backed memory command bridge。
-- cron、launchd 或手動 script 觸發的筆記庫整理流程。
+- cron、launchd、macOS LaunchDaemon helper 或手動 script 觸發的筆記庫整理流程。
 - 先產生 reviewable drafts，再由人決定是否 approve 的知識沉澱流程。
 
-它不提供 hosted multi-user service、Joplin sync server、web UI、daemon scheduler 或直接替代 Joplin 的筆記編輯體驗。若你不使用 Hermes，需要自行負責排程、operator review 與 agent 呼叫規則。
+它不提供 hosted multi-user service、Joplin sync server、web UI、常駐 daemon runtime 或直接替代 Joplin 的筆記編輯體驗。若你不使用 Hermes，需要自行負責 operator review 與 agent 呼叫規則。
 
 ## Commands
 

@@ -51,6 +51,30 @@ test("install script is published and documented", () => {
   assert.match(readme, /source ~\/\.config\/hermes-wiki-engine\/env/);
 });
 
+test("macOS LaunchDaemon installer keeps automation review-gated", () => {
+  const scriptPath = path.join(projectRoot, "scripts", "install-macos-launchdaemon.sh");
+  const script = fs.readFileSync(scriptPath, "utf8");
+  const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8");
+  const syntaxCheck = spawnSync("sh", ["-n", scriptPath], { encoding: "utf8" });
+
+  assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
+  assert.match(script, /com\.hermes\.wiki-automate/);
+  assert.match(script, /HWE_AUTOMATION_LOAD:-1/);
+  assert.match(script, /\/Library\/LaunchDaemons/);
+  assert.match(script, /\/Users\/\$target_user\/bin\/wiki-automate-once/);
+  assert.match(script, /<key>UserName<\/key>/);
+  assert.match(script, /wiki automate once/);
+  assert.match(script, /launchctl bootstrap system/);
+  assert.match(script, /wiki-automate\.out\.log/);
+  assert.match(script, /wiki-automate\.err\.log/);
+  assert.match(script, /\/opt\/homebrew\/bin/);
+  assert.doesNotMatch(script, /WIKI_JOPLIN_TOKEN=.*[A-Za-z0-9]/);
+  assert.doesNotMatch(script, /wiki approve/);
+  assert.match(readme, /install-macos-launchdaemon\.sh/);
+  assert.match(readme, /launchctl print system\/com\.hermes\.wiki-automate/);
+  assert.match(readme, /wiki automate status/);
+});
+
 test("environment example uses safe placeholders", () => {
   const envExample = fs.readFileSync(path.join(projectRoot, ".env.example"), "utf8");
   for (const key of [
