@@ -1,11 +1,36 @@
 {
   "name": "hermes-wiki-engine",
   "version": "0.1.0",
-  "private": true,
+  "description": "Local-first Joplin wiki engine for source-backed AI memory.",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gcake119/llm-wiki-engine-joplin.git"
+  },
+  "keywords": [
+    "joplin",
+    "wiki",
+    "cli",
+    "local-first",
+    "ai-memory"
+  ],
   "bin": {
     "wiki": "./src/wiki.js"
   },
+  "files": [
+    "src/",
+    "test/",
+    "docs/",
+    "openspec/config.yaml",
+    "openspec/specs/",
+    "packaging/",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    ".env.example"
+  ],
   "scripts": {
     "test": "node --test"
   },

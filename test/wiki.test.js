@@ -6,6 +6,63 @@ import path from "node:path";
 
 import { defaultStateDir, parseArgs, run } from "../src/wiki.js";
 
+const projectRoot = path.resolve(import.meta.dirname, "..");
+
+test("package metadata is ready for the public CLI package", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+  assert.equal(pkg.private, undefined);
+  assert.equal(pkg.description, "Local-first Joplin wiki engine for source-backed AI memory.");
+  assert.equal(pkg.license, "MIT");
+  assert.deepEqual(pkg.repository, {
+    type: "git",
+    url: "git+https://github.com/gcake119/llm-wiki-engine-joplin.git",
+  });
+  assert.equal(pkg.bin.wiki, "./src/wiki.js");
+  assert.equal(pkg.engines.node, ">=20");
+  assert.ok(pkg.keywords.includes("joplin"));
+  assert.ok(pkg.keywords.includes("cli"));
+  assert.ok(pkg.files.includes("src/"));
+  for (const expectedFile of ["README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", ".env.example"]) {
+    assert.ok(pkg.files.includes(expectedFile), `${expectedFile} must be in package files`);
+  }
+});
+
+test("environment example uses safe placeholders", () => {
+  const envExample = fs.readFileSync(path.join(projectRoot, ".env.example"), "utf8");
+  for (const key of [
+    "WIKI_STATE_DIR",
+    "WIKI_JOPLIN_API_URL",
+    "WIKI_JOPLIN_TOKEN",
+    "DISCORD_SYSTEM_WEBHOOK_URL",
+    "WIKI_CAPTURE_TELEGRAM_ALLOWLIST",
+    "WIKI_CAPTURE_DISCORD_ALLOWLIST",
+    "WIKI_CAPTURE_RATE_LIMIT",
+    "WIKI_LLM_MODEL",
+  ]) {
+    assert.match(envExample, new RegExp(`^(?:export )?${key}=`, "m"));
+  }
+  assert.doesNotMatch(envExample, /\b(?:sk|token|key)-[A-Za-z0-9_-]+\b/i);
+  assert.doesNotMatch(envExample, /https:\/\/discord\.com\/api\/webhooks\/\d+\//);
+});
+
+test("README documents the portable install path and writeback gate", () => {
+  const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8");
+  for (const text of [
+    "npm install -g",
+    "cp .env.example .env",
+    "WIKI_STATE_DIR",
+    "WIKI_JOPLIN_API_URL",
+    "WIKI_JOPLIN_TOKEN",
+    "wiki status",
+    "wiki sync",
+    "wiki compile",
+    "/Users/hermes",
+    "wiki approve",
+  ]) {
+    assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
 test("parses known commands", () => {
   assert.deepEqual(parseArgs(["compile"]), { command: "compile", rest: [] });
   assert.deepEqual(parseArgs(["query", "問題"]), { command: "query", rest: ["問題"] });

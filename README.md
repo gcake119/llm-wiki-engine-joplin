@@ -1,13 +1,55 @@
 # Hermes Wiki Engine
 
-Hermes Wiki Engine 是給 Hermes 使用的本機知識引擎。第一版命令叫 `wiki`。
+Hermes Wiki Engine 是 local-first 的 Joplin wiki CLI。它把 Joplin 筆記同步成可重建的本機 artifacts，讓 AI agent 可以用 `wiki query`、`wiki read`、`wiki links` 查詢 source-backed memory。
 
-## Scope
+Joplin 仍是長期知識庫 single source of truth。除了 `wiki approve` 以外，其他命令不得寫入 Joplin notes。
 
-- 從 Joplin Data API 同步全筆記庫。
-- 編譯 wiki / graph / index，供 Hermes 查詢本機長期記憶。
-- 從 Telegram / Discord 產生 draft，人工 approve 後才寫回 Joplin。
-- 使用 `wiki` 作為 Hermes command bridge。
+## Quickstart
+
+需求：
+
+- Node.js 20 或更新版本。
+- Joplin Desktop 開啟 Data API。
+- 一組 Joplin Data API token。
+
+從 checkout 安裝：
+
+```zsh
+npm install -g .
+```
+
+建立本機設定：
+
+```zsh
+cp .env.example .env
+```
+
+編輯 `.env`，至少設定：
+
+```zsh
+export WIKI_STATE_DIR="$HOME/.local/state/hermes-wiki-engine"
+export WIKI_JOPLIN_API_URL="http://127.0.0.1:41184"
+export WIKI_JOPLIN_TOKEN="<your-joplin-data-api-token>"
+```
+
+載入設定後先確認 CLI 可用：
+
+```zsh
+source .env
+wiki status
+```
+
+同步與編譯：
+
+```zsh
+wiki sync
+wiki compile
+wiki query "問題"
+wiki read <ref>
+wiki links <ref>
+```
+
+`wiki sync` 只讀 Joplin Data API 並更新 raw cache。`wiki compile` 從本機 raw cache 建立 compiled pages、graph 與 schema。`wiki query`、`wiki read`、`wiki links` 只讀已完成的本機 artifacts，不會在前台查詢時臨時重編全庫。
 
 ## Commands
 
@@ -16,26 +58,36 @@ wiki status
 wiki sync
 wiki compile
 wiki query "問題"
-wiki draft telegram ...
-wiki draft discord ...
+wiki read <ref>
+wiki links <ref>
+wiki audit
+wiki automate once --draft-top <N> --notify
+wiki automate status
+wiki draft candidates --limit 10
+wiki draft candidate <candidate-id> --target-notebook <notebook-id>
+wiki draft consolidate --target-notebook <notebook-id> --ref note:<id> "整理目標"
+wiki draft llm-consolidate --target-notebook <notebook-id> --ref note:<id> "整理目標"
+wiki draft reject <draft-id>
+wiki semantic build
+wiki semantic query "問題"
+wiki capture telegram --input <path>
+wiki capture discord --input <path>
+wiki notify discord --message "訊息"
 wiki approve <draft-id>
 ```
 
-`wiki compile` 代表完整更新知識庫：preflight、Joplin raw sync、compile、graph / index、lint / health snapshot。
-
-`wiki sync` 只做輕量 Joplin raw sync，適合背景定時跑。
-
-`wiki query` 只查已完成 cache / graph / index。它不會在 Hermes 前台對話臨時重編全庫。
-
-## Boundaries
+## Safety Model
 
 - Joplin 是長期知識庫 SSOT。
-- Hermes 讀已完成 cache，不在前台對話臨時重編全庫。
-- Telegram / Discord 是 capture source，不直接寫入正式知識庫。
-- 跨 macOS 使用者整合只走 Joplin Data API，不讀主使用者 Joplin SQLite。
-- Joplin token 放在 `hermes` 使用者 secret env，不進 git、不印 log。
+- Joplin 整合只走 Joplin Data API，不直接讀寫 Joplin SQLite 或 profile。
+- `wiki sync`、`wiki compile`、`wiki query`、`wiki read`、`wiki links`、`wiki audit`、candidate discovery、automation、capture、draft creation 都不得寫入 Joplin notes。
+- `wiki approve <draft-id>` 是唯一正式 Joplin writeback gate。
+- Telegram／Discord 是 capture source，只能先產生 filesystem draft，人工 review 後再 approve。
+- Token、webhook URL、allowlist、`.env`、state directory、raw cache、generated drafts 不得進 git。
 
-## Planned Runtime
+## Hermes Runtime Profile
+
+開源 quickstart 不需要 `/Users/hermes`。Hermes runtime 是進階部署 profile，預期 layout：
 
 ```text
 /Users/hermes/projects/hermes-wiki-engine
@@ -45,22 +97,14 @@ wiki approve <draft-id>
 /Users/hermes/.config/hermes-knowledge/env
 ```
 
-正式乾淨 workspace 預定為：
+Hermes skill guidance 位於 `packaging/hermes/skills/wiki/SKILL.md`。Hermes 前台回答記憶問題時仍必須走 `wiki query`、`wiki read`、`wiki links`，不得把 draft 或 semantic score 當成事實來源。
 
-```text
-/Users/caiyijun/project/hermes-wiki-engine
+## Development
+
+```zsh
+npm test
+npm pack --dry-run
+spectra validate open-source-file-structure
 ```
 
-目前本目錄只是 planning spike，規劃完成後再搬出去實作。
-
-## First Implementation Slice
-
-第一個 slice 只做：
-
-- `wiki status`
-- `wiki sync`
-- Joplin Data API preflight
-- notes metadata raw cache
-- lock file + `status.json`
-
-暫不做 Telegram / Discord API、Joplin writeback、graph compile、附件 OCR。
+檔案架構與 publish 邊界見 `docs/open-source-file-structure.md`。

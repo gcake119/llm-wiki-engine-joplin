@@ -2,6 +2,10 @@
 
 Use this skill when the user asks Hermes to query long-term local memory, update the local wiki, sync Joplin notes, or capture Telegram / Discord knowledge drafts.
 
+Public repository: https://github.com/gcake119/llm-wiki-engine-joplin
+
+This is the Hermes runtime profile. General open-source users can install the `wiki` CLI without creating `/Users/hermes`; Hermes deployments use the absolute command bridge below.
+
 Use the command bridge by absolute path:
 
 ```zsh
