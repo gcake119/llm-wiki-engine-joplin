@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { defaultStateDir, parseArgs, run } from "../src/wiki.js";
 
@@ -22,9 +23,31 @@ test("package metadata is ready for the public CLI package", () => {
   assert.ok(pkg.keywords.includes("joplin"));
   assert.ok(pkg.keywords.includes("cli"));
   assert.ok(pkg.files.includes("src/"));
+  assert.ok(pkg.files.includes("scripts/"));
   for (const expectedFile of ["README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", ".env.example"]) {
     assert.ok(pkg.files.includes(expectedFile), `${expectedFile} must be in package files`);
   }
+});
+
+test("install script is published and documented", () => {
+  const installScriptPath = path.join(projectRoot, "scripts", "install.sh");
+  const installScript = fs.readFileSync(installScriptPath, "utf8");
+  const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8");
+  const syntaxCheck = spawnSync("sh", ["-n", installScriptPath], { encoding: "utf8" });
+
+  assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
+  assert.match(installScript, /codeload\.github\.com/);
+  assert.match(installScript, /npm install -g/);
+  assert.match(installScript, /\/dev\/tty/);
+  assert.match(installScript, /Press Enter to accept a suggested value/);
+  assert.match(installScript, /Suggested: %s/);
+  assert.match(installScript, /WIKI_JOPLIN_TOKEN/);
+  assert.match(installScript, /Joplin Desktop > Web Clipper > Advanced options/);
+  assert.match(installScript, /hermes-wiki-engine"\nconfig_file="\$config_dir\/env"/);
+  assert.match(installScript, /Node\.js 20 or newer is required/);
+  assert.match(readme, /raw\.githubusercontent\.com\/gcake119\/llm-wiki-engine-joplin\/main\/scripts\/install\.sh/);
+  assert.match(readme, /可以直接按 Enter 採用預設/);
+  assert.match(readme, /source ~\/\.config\/hermes-wiki-engine\/env/);
 });
 
 test("environment example uses safe placeholders", () => {

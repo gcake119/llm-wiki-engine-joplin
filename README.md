@@ -6,6 +6,14 @@ Hermes Wiki Engine 是搭配 Hermes 使用的 llm-wiki 筆記引擎。它把 Jop
 
 Hermes 之外也能使用：你可以把它當成 standalone Joplin local-first wiki CLI，但需要自己決定由哪個 agent、script 或人工流程呼叫 `wiki`，並負責安排自動化整理的執行時機。
 
+## What It Does
+
+- 從 Joplin Desktop Data API 讀取筆記，建立本機 raw cache。
+- 把 raw cache 編譯成可查詢的 wiki pages、graph 與 schema。
+- 讓 Hermes 或其他 agent 用 `wiki query`、`wiki read`、`wiki links` 回答 source-backed memory 問題。
+- 用 `wiki automate once` 掃描筆記庫、找出整理候選、產生可審核 drafts。
+- 只允許 `wiki approve <draft-id>` 正式寫回 Joplin。
+
 ## Quickstart
 
 需求：
@@ -14,34 +22,26 @@ Hermes 之外也能使用：你可以把它當成 standalone Joplin local-first 
 - Joplin Desktop 開啟 Data API。
 - 一組 Joplin Data API token。
 
-從 checkout 安裝：
+安裝：
 
 ```zsh
-npm install -g .
+curl -fsSL https://raw.githubusercontent.com/gcake119/llm-wiki-engine-joplin/main/scripts/install.sh | sh
 ```
 
-建立本機設定：
+安裝腳本會在終端機詢問 `WIKI_STATE_DIR`、`WIKI_JOPLIN_API_URL`、`WIKI_JOPLIN_TOKEN`，並顯示建議值。`WIKI_STATE_DIR` 與 `WIKI_JOPLIN_API_URL` 可以直接按 Enter 採用預設；`WIKI_JOPLIN_TOKEN` 需要貼上 Joplin Data API token。設定會寫入：
 
 ```zsh
-cp .env.example .env
+~/.config/hermes-wiki-engine/env
 ```
 
-編輯 `.env`，至少設定：
+載入後確認 CLI 可用：
 
 ```zsh
-export WIKI_STATE_DIR="$HOME/.local/state/hermes-wiki-engine"
-export WIKI_JOPLIN_API_URL="http://127.0.0.1:41184"
-export WIKI_JOPLIN_TOKEN="<your-joplin-data-api-token>"
-```
-
-載入設定後先確認 CLI 可用：
-
-```zsh
-source .env
+source ~/.config/hermes-wiki-engine/env
 wiki status
 ```
 
-同步與編譯：
+第一次同步、編譯、查詢：
 
 ```zsh
 wiki sync
@@ -52,6 +52,36 @@ wiki links <ref>
 ```
 
 `wiki sync` 只讀 Joplin Data API 並更新 raw cache。`wiki compile` 從本機 raw cache 建立 compiled pages、graph 與 schema。`wiki query`、`wiki read`、`wiki links` 只讀已完成的本機 artifacts，不會在前台查詢時臨時重編全庫。
+
+## Install Options
+
+預設安裝公開 repo 的 `main`。若要安裝特定 tag：
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/gcake119/llm-wiki-engine-joplin/main/scripts/install.sh | HWE_REF=v0.1.0 sh
+```
+
+從 checkout 安裝：
+
+```zsh
+npm install -g .
+cp .env.example .env
+```
+
+再編輯 `.env`，至少設定：
+
+```zsh
+export WIKI_STATE_DIR="$HOME/.local/state/hermes-wiki-engine"
+export WIKI_JOPLIN_API_URL="http://127.0.0.1:41184"
+export WIKI_JOPLIN_TOKEN="<your-joplin-data-api-token>"
+```
+
+從 checkout 安裝時，載入設定後先確認 CLI 可用：
+
+```zsh
+source .env
+wiki status
+```
 
 ## Hermes Usage
 

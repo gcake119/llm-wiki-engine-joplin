@@ -20,6 +20,7 @@
   },
   "files": [
     "src/",
+    "scripts/",
     "test/",
     "docs/",
     "openspec/config.yaml",

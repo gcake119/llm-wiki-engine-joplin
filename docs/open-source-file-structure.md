@@ -7,6 +7,7 @@
 - `package.json`：npm CLI metadata、`wiki` bin、Node engine、publish file list。
 - `src/wiki.js`：CLI runtime。它是唯一 Node entrypoint。
 - `README.md`：一般使用者 quickstart、command overview、安全邊界。
+- `scripts/install.sh`：公開 repo 的 one-line install 入口，下載 source tarball 後用 `npm install -g` 安裝 CLI。
 - `.env.example`：portable local configuration placeholder，不含真實 secret。
 - `LICENSE`：開源授權。
 - `SECURITY.md`：本機 secret、Joplin Data API、approve-only writeback 邊界。
