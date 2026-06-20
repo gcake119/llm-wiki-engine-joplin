@@ -157,12 +157,64 @@ function queryTerms(question) {
   return question.toLowerCase().split(/\s+/).filter(Boolean);
 }
 
+const QUERY_CONTEXT_WINDOW = 180;
+const HERMES_MEMORY_TERMS = new Set([
+  "wiki",
+  "engine",
+  "joplin",
+  "長期記憶",
+  "記憶",
+  "memory",
+]);
+const GENERIC_SINGLE_MATCH_TERMS = new Set(["hermes", "joplin"]);
+const HERMES_BRAND_FALSE_POSITIVE_RE = /\b(?:gamdias|keyboard|ultimate)\b/i;
+
+function matchingTerms(value, terms) {
+  return terms.filter((term) => value.includes(term));
+}
+
+function hasLocalCooccurrence(value, terms) {
+  const positions = terms
+    .map((term) => value.indexOf(term))
+    .filter((position) => position >= 0)
+    .sort((a, b) => a - b);
+  return positions.length >= 2
+    && positions[positions.length - 1] - positions[0] <= QUERY_CONTEXT_WINDOW;
+}
+
+function isHermesBrandFalsePositive(note, matchedTerms) {
+  const haystack = `${note.title || ""} ${note.plain_text || ""}`;
+  return matchedTerms.includes("hermes")
+    && !matchedTerms.some((term) => HERMES_MEMORY_TERMS.has(term))
+    && HERMES_BRAND_FALSE_POSITIVE_RE.test(haystack);
+}
+
 function noteScore(note, terms) {
   const title = (note.title || "").toLowerCase();
   const text = (note.plain_text || "").toLowerCase();
-  return terms.reduce((score, term) => {
+  const matchedTerms = [...new Set([
+    ...matchingTerms(title, terms),
+    ...matchingTerms(text, terms),
+  ])];
+  const baseScore = terms.reduce((score, term) => {
     return score + (title.includes(term) ? 2 : 0) + (text.includes(term) ? 1 : 0);
   }, 0);
+  if (baseScore === 0) return 0;
+
+  let score = baseScore;
+  score += matchedTerms.length > 1 ? matchedTerms.length * matchedTerms.length : 0;
+  score += (matchedTerms.length / Math.max(terms.length, 1)) * 4;
+  if (hasLocalCooccurrence(title, terms)) score += 3;
+  if (hasLocalCooccurrence(text, terms)) score += 4;
+  if (
+    terms.length > 1
+    && matchedTerms.length === 1
+    && GENERIC_SINGLE_MATCH_TERMS.has(matchedTerms[0])
+  ) {
+    score -= 1.5;
+  }
+  if (isHermesBrandFalsePositive(note, matchedTerms)) score -= 2;
+  return Math.max(0, Number(score.toFixed(3)));
 }
 
 function snippet(note, terms) {
@@ -215,19 +267,32 @@ function queryRerankPrompt(question, candidates, terms) {
     "Return only the completed JSON array. Do not explain, summarize, or wrap the result in markdown.",
     "Copy ref values exactly from candidates. relevance must be a number from 0 to 1.",
     "Write the reason field in Traditional Chinese（繁體中文）. Use English or original text only for technical terms, product names, note titles, refs, and necessary names.",
+    "Prioritize candidates about the Hermes wiki engine and Hermes long-term memory system.",
+    "Downgrade generic Joplin tutorials, generic AI assistant articles, and keyboard brand Hermes candidates unless they directly discuss the Hermes wiki memory system.",
     "[{\"ref\":\"note:<copy candidate ref>\",\"relevance\":0.0,\"reason\":\"short reason\"}]",
     JSON.stringify({
-    task: "rerank wiki query candidates",
-    prompt_version: QUERY_RERANK_PROMPT_VERSION,
-    query: question,
-    output: [{ ref: "candidate ref", relevance: 0.0, reason: "short reason" }],
-    candidates: candidates.map(({ note, score }) => ({
-      ref: `note:${note.id}`,
-      title: note.title || "",
-      parent_id: note.parent_id || "",
-      snippet: rerankSnippet(note, terms),
-      score,
-    })),
+      task: "rerank wiki query candidates",
+      prompt_version: QUERY_RERANK_PROMPT_VERSION,
+      query: question,
+      relevance_guidance: [
+        "Hermes wiki engine",
+        "Hermes long-term memory system",
+        "downgrade generic Joplin tutorials",
+        "downgrade generic AI assistant articles",
+        "downgrade keyboard brand Hermes",
+      ],
+      language: {
+        reason: "Traditional Chinese（繁體中文）",
+        exceptions: "technical terms, product names, note titles, refs, and necessary names may use English or original text",
+      },
+      output: [{ ref: "candidate ref", relevance: 0.0, reason: "short reason" }],
+      candidates: candidates.map(({ note, score }) => ({
+        ref: `note:${note.id}`,
+        title: note.title || "",
+        parent_id: note.parent_id || "",
+        snippet: rerankSnippet(note, terms),
+        score,
+      })),
     }, null, 2),
   ].join("\n\n");
 }

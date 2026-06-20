@@ -960,6 +960,92 @@ test("query ranks title matches before body-only matches", async () => {
   assert.deepEqual(result.results.map((note) => note.id), ["a", "b"]);
 });
 
+test("query ranks contextual Hermes wiki memory matches before generic single-term matches", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-keyboard",
+          title: "Gamdias Hermes keyboard",
+          parent_id: "folder-keyboard",
+          plain_text: "Hermes Ultimate keyboard review",
+        },
+        {
+          id: "note-joplin",
+          title: "Joplin Web Clipper 教學",
+          parent_id: "folder-joplin",
+          plain_text: "Joplin 筆記同步與匯入教學",
+        },
+        {
+          id: "note-memory",
+          title: "Hermes Wiki Engine",
+          parent_id: "folder-memory",
+          plain_text: "Joplin 長期記憶系統 for Hermes wiki engine",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["query", "Hermes", "wiki", "engine", "Joplin", "長期記憶"],
+      { WIKI_STATE_DIR: stateDir },
+      { llmProvider: async () => { throw new Error("query must not call LLM by default"); } },
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.results.map((note) => note.id), [
+    "note-memory",
+    "note-joplin",
+    "note-keyboard",
+  ]);
+  assert.ok(result.results[0].score > result.results[1].score);
+  assert.ok(result.results[0].score > result.results[2].score);
+});
+
+test("query downgrades keyboard-brand Hermes matches for memory queries", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-keyboard",
+          title: "Gamdias Hermes keyboard",
+          parent_id: "folder-keyboard",
+          plain_text: "Hermes Ultimate keyboard",
+        },
+        {
+          id: "note-memory",
+          title: "Hermes Wiki Engine",
+          parent_id: "folder-memory",
+          plain_text: "Joplin 長期記憶 for Hermes",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["query", "Hermes", "長期記憶"],
+      { WIKI_STATE_DIR: stateDir },
+      { llmProvider: async () => { throw new Error("query must not call LLM by default"); } },
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.results.map((note) => note.id), [
+    "note-memory",
+    "note-keyboard",
+  ]);
+  assert.ok(result.results[0].score > result.results[1].score);
+});
+
 test("query reranks bounded keyword candidates with local LLM", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
   fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
@@ -1146,13 +1232,31 @@ test("query rerank prompt only includes bounded candidate metadata", async () =>
   assert.doesNotMatch(prompt, /WIKI_JOPLIN_TOKEN/);
 });
 
-test("query rerank prompt asks for Traditional Chinese reasons", async () => {
+test("query rerank prompt distinguishes Hermes memory context from generic articles", async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
   fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
   fs.writeFileSync(
     path.join(stateDir, "compiled", "notes.json"),
     `${JSON.stringify({
       notes: [
+        {
+          id: "note-keyboard",
+          title: "Gamdias Hermes keyboard",
+          parent_id: "folder-keyboard",
+          plain_text: "Hermes Ultimate keyboard",
+        },
+        {
+          id: "note-joplin",
+          title: "Joplin 教學",
+          parent_id: "folder-joplin",
+          plain_text: "Joplin Web Clipper setup",
+        },
+        {
+          id: "note-ai",
+          title: "AI assistant overview",
+          parent_id: "folder-ai",
+          plain_text: "general AI assistant memory article",
+        },
         {
           id: "note-memory",
           title: "Hermes Wiki Engine",
@@ -1179,6 +1283,11 @@ test("query rerank prompt asks for Traditional Chinese reasons", async () => {
     },
   );
 
+  assert.match(prompt, /Hermes wiki engine/i);
+  assert.match(prompt, /Hermes long-term memory system/i);
+  assert.match(prompt, /generic Joplin tutorials/i);
+  assert.match(prompt, /generic AI assistant articles/i);
+  assert.match(prompt, /keyboard brand Hermes/i);
   assert.match(prompt, /Traditional Chinese/i);
   assert.match(prompt, /繁體中文/);
   assert.match(prompt, /technical terms, product names, note titles, refs, and necessary names/i);
