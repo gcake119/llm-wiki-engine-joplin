@@ -39,3 +39,4 @@
 | ID | 日期 | 狀態 | 產品範圍 | 主題 | 決策摘要 | 關聯 Spectra／Archive | 關聯 commit | ADR |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | DEC-0001 | 2026-06-19 | 採用，歷史回填 | hermes-wiki-engine | Joplin SSOT 與 review-gated writeback | Joplin 是長期知識庫 SSOT；Hermes Wiki Engine 只能透過 Joplin Data API 整合，candidate、draft、compile、audit 不得直接寫回 Joplin，正式沉澱必須經 `wiki approve`。 | `openspec/changes/archive/2026-06-19-strengthen-library-consolidation/` | `ab8ee51` | [ADR-0001](ADR-0001-joplin-ssot-review-gated-writeback.md) |
+| DEC-0002 | 2026-06-20 | 採用 | hermes-wiki-engine | Local LLM query rerank 邊界 | `wiki query` 預設維持 deterministic lexical retrieval；只有 operator 顯式加 `--rerank-llm` 時才可用本機 LLM 重排 bounded candidates。LLM 只接收 metadata-only source refs，rerank reason 不是事實來源，失敗必須 `LLM_RERANK_UNAVAILABLE` fail closed。 | `openspec/changes/archive/2026-06-20-add-local-llm-query-rerank/` | 本 commit | 無 |

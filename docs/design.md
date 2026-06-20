@@ -97,6 +97,7 @@ wiki status
 wiki sync
 wiki compile
 wiki query "問題"
+wiki query "問題" --rerank-llm
 wiki read <ref>
 wiki links <ref>
 wiki audit
@@ -136,6 +137,18 @@ preflight
 ```
 
 `wiki query` 只讀已完成 cache / graph / index，不在前台對話臨時重編全庫。回答必須帶來源筆記或路徑；找不到來源時回報資料不足。若 operator 先跑過 `wiki semantic build`，foreground retrieval 可以參考 `wiki semantic query` 的 scored refs，但最終仍要回到 compiled page、`wiki read` 或 source refs 驗證；`wiki query` 不會隱性啟動 embedding build。
+
+`wiki query "問題" --rerank-llm` 是 explicit query-rerank path，不是預設查詢。pipeline 是：
+
+```text
+compiled/notes.json
+  -> deterministic keyword candidates, bounded to 20
+  -> local LLM prompt with query, ref, title, parent id, snippet, keyword score
+  -> strict JSON refs, relevance, reason
+  -> source-backed top 5 results with keyword score and rerank metadata
+```
+
+query-rerank prompt 不包含 full raw note body、Joplin token、env dump、draft content 或 writeback payload。LLM 只能重排 bounded source refs，不能直接回答問題，也不能新增、修改或刪除 draft、automation、semantic、capture、review、raw、compiled 或 Joplin artifacts。provider missing、empty output、invalid JSON 或 only unknown refs 時回傳 `LLM_RERANK_UNAVAILABLE`，不得靜默降級成 deterministic query 並宣稱已 rerank。
 
 `wiki draft consolidate` 是 explicit-ref 背景整理入口。它從 operator 提供的整理目的與既有本機 refs 產生 source-backed reviewable draft。`note:` refs 只讀 `compiled/notes.json`，`page:` refs 只讀 `compiled/pages.json` 或 `compiled/pages/<id>.json`。找不到 compiled source 時 fail closed，不建立 draft。整理結果不得直接放進 compiled pages 或寫回 Joplin；必須通過 `wiki approve`，再由下一輪 Joplin sync / compile 進入正式 read path。
 

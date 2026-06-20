@@ -13,6 +13,7 @@ Use the command bridge by absolute path:
 /Users/hermes/.local/bin/wiki sync
 /Users/hermes/.local/bin/wiki compile
 /Users/hermes/.local/bin/wiki query "問題"
+/Users/hermes/.local/bin/wiki query "問題" --rerank-llm
 /Users/hermes/.local/bin/wiki read <ref>
 /Users/hermes/.local/bin/wiki links <ref>
 /Users/hermes/.local/bin/wiki automate once --draft-top <N> --notify
@@ -33,6 +34,8 @@ Use the command bridge by absolute path:
 Rules:
 
 - For memory questions, call `wiki query`, then use `wiki read` or `wiki links` when a source-backed ref needs more evidence.
+- Use `wiki query "問題" --rerank-llm` only when the operator needs local LLM semantic reranking of ambiguous keyword matches.
+- Treat rerank scores and rerank reasons as ranking metadata, not facts. Verify useful refs with `wiki read` before answering.
 - For "更新我的知識庫", call `wiki compile`.
 - For lightweight Joplin sync, call `wiki sync`.
 - Do not claim knowledge was found unless `wiki query` returns sources.
@@ -61,5 +64,6 @@ Rules:
 - This repo does not run a daemon or scheduler by itself. Scheduling belongs to Hermes, launchd, cron, or another external runner.
 - Review governance is local evidence only: pending, approved, rejected, and rollback hints live under local review artifacts.
 - Keep foreground answers source-backed through `wiki query`, `wiki read`, and `wiki links`.
+- Do not use `--rerank-llm` as a default path; ordinary memory answers should stay deterministic unless semantic reranking is explicitly useful.
 - Semantic scores are not facts. They point to refs that must be checked against compiled pages or `wiki read`.
 - Do not print token files or secret env contents.

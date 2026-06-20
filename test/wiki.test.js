@@ -913,11 +913,209 @@ test("query ranks title matches before body-only matches", async () => {
   );
 
   const result = JSON.parse(
-    await run(["query", "local", "retrieval"], { WIKI_STATE_DIR: stateDir }),
+    await run(
+      ["query", "local", "retrieval"],
+      { WIKI_STATE_DIR: stateDir },
+      { llmProvider: async () => { throw new Error("query must not call LLM by default"); } },
+    ),
   );
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.results.map((note) => note.id), ["a", "b"]);
+});
+
+test("query reranks bounded keyword candidates with local LLM", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-keyboard",
+          title: "Gamdias Hermes keyboard",
+          parent_id: "folder-keyboard",
+          plain_text: "Hermes Ultimate keyboard",
+        },
+        {
+          id: "note-memory",
+          title: "Hermes Wiki Engine",
+          parent_id: "folder-memory",
+          plain_text: "Joplin long-term memory for Hermes",
+        },
+      ],
+    })}\n`,
+  );
+
+  const result = JSON.parse(
+    await run(
+      ["query", "Hermes", "長期記憶", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir, WIKI_LLM_MODEL: "local-test" },
+      {
+        llmProvider: async () => ({
+          provider: "test",
+          model: "local-test",
+          text: JSON.stringify([
+            { ref: "note:note-memory", relevance: 0.95, reason: "Hermes memory note" },
+            { ref: "note:note-keyboard", relevance: 0.2, reason: "keyboard article" },
+          ]),
+        }),
+      },
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "reranked");
+  assert.equal(result.evidence_status, "source_backed");
+  assert.deepEqual(result.results.map((note) => note.ref), [
+    "note:note-memory",
+    "note:note-keyboard",
+  ]);
+  assert.equal(result.results[0].score > 0, true);
+  assert.equal(result.results[0].rerank_score, 0.95);
+  assert.equal(result.results[0].rerank_reason, "Hermes memory note");
+  assert.equal(result.rerank.provider, "test");
+  assert.equal(result.rerank.model, "local-test");
+  assert.equal(result.rerank.prompt_version, "query-rerank-v1");
+});
+
+test("query rerank prompt only includes bounded candidate metadata", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: Array.from({ length: 25 }, (_, index) => ({
+        id: `note-${index + 1}`,
+        title: `Hermes candidate ${index + 1}`,
+        parent_id: "folder-1",
+        plain_text: `Hermes snippet ${index + 1} token-value draft content. FULL_RAW_BODY_${index + 1}`,
+      })),
+    })}\n`,
+  );
+  let prompt = "";
+
+  await run(
+    ["query", "Hermes", "--rerank-llm"],
+    {
+      WIKI_STATE_DIR: stateDir,
+      WIKI_JOPLIN_TOKEN: "token-value",
+      WIKI_LLM_MODEL: "local-test",
+    },
+    {
+      llmProvider: async ({ prompt: value }) => {
+        prompt = value;
+        return {
+          provider: "test",
+          model: "local-test",
+          text: JSON.stringify([{ ref: "note:note-1", relevance: 1, reason: "top" }]),
+        };
+      },
+    },
+  );
+
+  const candidates = [...prompt.matchAll(/"ref": "note:/g)];
+  assert.equal(candidates.length, 20);
+  assert.match(prompt, /"query": "Hermes"/);
+  assert.match(prompt, /"title": "Hermes candidate 1"/);
+  assert.match(prompt, /"parent_id": "folder-1"/);
+  assert.match(prompt, /"snippet":/);
+  assert.match(prompt, /"score":/);
+  assert.doesNotMatch(prompt, /FULL_RAW_BODY_1/);
+  assert.doesNotMatch(prompt, /token-value/);
+  assert.doesNotMatch(prompt, /draft content/);
+  assert.doesNotMatch(prompt, /WIKI_JOPLIN_TOKEN/);
+});
+
+test("query rerank fails closed when local LLM output is unavailable", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-memory",
+          title: "Hermes memory",
+          plain_text: "Hermes memory source body token-value",
+        },
+      ],
+    })}\n`,
+  );
+
+  const missing = JSON.parse(
+    await run(["query", "Hermes", "memory", "--rerank-llm"], { WIKI_STATE_DIR: stateDir }),
+  );
+  const invalidJson = JSON.parse(
+    await run(
+      ["query", "Hermes", "memory", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir },
+      { llmProvider: async () => ({ provider: "test", model: "local-test", text: "not json" }) },
+    ),
+  );
+  const unknownRefs = JSON.parse(
+    await run(
+      ["query", "Hermes", "memory", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        llmProvider: async () => ({
+          provider: "test",
+          model: "local-test",
+          text: JSON.stringify([{ ref: "note:unknown", relevance: 1, reason: "bad" }]),
+        }),
+      },
+    ),
+  );
+
+  for (const result of [missing, invalidJson, unknownRefs]) {
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "LLM_RERANK_UNAVAILABLE");
+    assert.doesNotMatch(JSON.stringify(result), /token-value|Hermes memory source body|prompt|stack/i);
+    assert.equal(Object.hasOwn(result, "results"), false);
+  }
+});
+
+test("query rerank remains foreground read-only", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-query-"));
+  fs.mkdirSync(path.join(stateDir, "compiled"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "compiled", "notes.json"),
+    `${JSON.stringify({
+      notes: [
+        {
+          id: "note-memory",
+          title: "Hermes memory",
+          parent_id: "folder-1",
+          plain_text: "Hermes memory",
+        },
+      ],
+    })}\n`,
+  );
+  const fetchImpl = async () => {
+    throw new Error("query rerank must not call Joplin");
+  };
+
+  const result = JSON.parse(
+    await run(
+      ["query", "Hermes", "--rerank-llm"],
+      { WIKI_STATE_DIR: stateDir },
+      {
+        fetchImpl,
+        llmProvider: async () => ({
+          provider: "test",
+          model: "local-test",
+          text: JSON.stringify([{ ref: "note:note-memory", relevance: 1, reason: "memory" }]),
+        }),
+      },
+    ),
+  );
+
+  assert.equal(result.ok, true);
+  for (const artifact of ["drafts", "automation", "semantic", "capture", "review", "raw"]) {
+    assert.equal(fs.existsSync(path.join(stateDir, artifact)), false);
+  }
+  assert.equal(fs.existsSync(path.join(stateDir, "compiled", "pages.json")), false);
+  assert.equal(fs.existsSync(path.join(stateDir, "compiled", "notes.json")), true);
 });
 
 test("query limits result count to the default top five", async () => {

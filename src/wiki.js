@@ -174,6 +174,78 @@ function snippet(note, terms) {
   return text.slice(Math.max(0, firstMatch - 40), firstMatch + 120).trim();
 }
 
+const QUERY_RESULT_LIMIT = 5;
+const QUERY_RERANK_CANDIDATE_LIMIT = 20;
+const QUERY_RERANK_PROMPT_VERSION = "query-rerank-v1";
+
+function queryCandidates(notes, terms, limit) {
+  return (notes || [])
+    .map((note) => ({ note, score: noteScore(note, terms) }))
+    .filter((result) => result.score > 0)
+    .sort((a, b) => b.score - a.score || a.note.title.localeCompare(b.note.title))
+    .slice(0, limit);
+}
+
+function queryResult({ note, score }, terms) {
+  return {
+    ref: `note:${note.id}`,
+    kind: "note",
+    id: note.id,
+    title: note.title || "",
+    parent_id: note.parent_id || "",
+    snippet: snippet(note, terms),
+    score,
+  };
+}
+
+function rerankSnippet(note, terms) {
+  return redactCaptureText(
+    snippet(note, terms).split(/[。.!?]\s*/)[0],
+  ).text
+    .replace(/\bdraft content\b/gi, "[REDACTED_DRAFT]")
+    .replace(/\bwriteback payload\b/gi, "[REDACTED_WRITEBACK]")
+    .slice(0, 120)
+    .trim();
+}
+
+function queryRerankPrompt(question, candidates, terms) {
+  return JSON.stringify({
+    task: "rerank wiki query candidates",
+    prompt_version: QUERY_RERANK_PROMPT_VERSION,
+    query: question,
+    output: [{ ref: "candidate ref", relevance: 0.0, reason: "short reason" }],
+    candidates: candidates.map(({ note, score }) => ({
+      ref: `note:${note.id}`,
+      title: note.title || "",
+      parent_id: note.parent_id || "",
+      snippet: rerankSnippet(note, terms),
+      score,
+    })),
+  }, null, 2);
+}
+
+function parseRerankRows(text, knownRefs) {
+  let rows;
+  try {
+    rows = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter((row) => knownRefs.has(row?.ref))
+    .map((row) => ({
+      ref: row.ref,
+      relevance: Math.max(0, Math.min(1, Number(row.relevance) || 0)),
+      reason: String(row.reason || "").slice(0, 160),
+    }))
+    .filter((row) => row.relevance > 0);
+}
+
+function rerankUnavailable() {
+  return safeError("LLM_RERANK_UNAVAILABLE", "Local LLM rerank is unavailable.");
+}
+
 function markdownNoteLinks(markdown) {
   return [...markdown.matchAll(/\]\(:\/([A-Za-z0-9_-]+)\)/g)].map((match) => match[1]);
 }
@@ -442,7 +514,15 @@ export function compile({ env = process.env, now = () => new Date() } = {}) {
   }
 }
 
-export function query(question, { env = process.env } = {}) {
+export async function query(
+  question,
+  {
+    env = process.env,
+    rerankLlm = false,
+    llmProvider,
+    execFileSync = nodeExecFileSync,
+  } = {},
+) {
   const stateDir = defaultStateDir(env);
   const compiledPath = path.join(stateDir, "compiled", "notes.json");
   if (!fs.existsSync(compiledPath)) {
@@ -454,20 +534,14 @@ export function query(question, { env = process.env } = {}) {
 
   const terms = queryTerms(question);
   const compiled = readJson(compiledPath);
-  const results = (compiled.notes || [])
-    .map((note) => ({ note, score: noteScore(note, terms) }))
-    .filter((result) => result.score > 0)
-    .sort((a, b) => b.score - a.score || a.note.title.localeCompare(b.note.title))
-    .slice(0, 5)
-    .map(({ note, score }) => ({
-      ref: `note:${note.id}`,
-      kind: "note",
-      id: note.id,
-      title: note.title || "",
-      parent_id: note.parent_id || "",
-      snippet: snippet(note, terms),
-      score,
-    }));
+  const candidates = queryCandidates(
+    compiled.notes,
+    terms,
+    rerankLlm ? QUERY_RERANK_CANDIDATE_LIMIT : QUERY_RESULT_LIMIT,
+  );
+  const results = candidates.slice(0, QUERY_RESULT_LIMIT).map((candidate) => (
+    queryResult(candidate, terms)
+  ));
 
   if (results.length === 0) {
     return {
@@ -476,6 +550,46 @@ export function query(question, { env = process.env } = {}) {
       evidence_status: "insufficient",
       message: "資料不足",
       results: [],
+    };
+  }
+  if (rerankLlm) {
+    const provider = llmProvider || (env.WIKI_LLM_MODEL ? defaultLlmProvider(env, execFileSync) : null);
+    if (!provider) return rerankUnavailable();
+    const knownRefs = new Set(candidates.map(({ note }) => `note:${note.id}`));
+    let llmResult;
+    try {
+      llmResult = await provider({
+        prompt: queryRerankPrompt(question, candidates, terms),
+        refs: [...knownRefs],
+      });
+    } catch {
+      return rerankUnavailable();
+    }
+    if (!llmResult?.text) return rerankUnavailable();
+    const rows = parseRerankRows(llmResult.text, knownRefs);
+    if (rows.length === 0) return rerankUnavailable();
+    const byRef = new Map(results.concat(candidates.map((candidate) => (
+      queryResult(candidate, terms)
+    ))).map((result) => [result.ref, result]));
+    const reranked = rows
+      .sort((a, b) => b.relevance - a.relevance)
+      .slice(0, QUERY_RESULT_LIMIT)
+      .map((row) => ({
+        ...byRef.get(row.ref),
+        rerank_score: row.relevance,
+        rerank_reason: row.reason,
+      }));
+    return {
+      ok: true,
+      state: "reranked",
+      evidence_status: "source_backed",
+      query: question,
+      rerank: {
+        provider: llmResult.provider || "ollama",
+        model: llmResult.model || env.WIKI_LLM_MODEL || "gemma3:12b",
+        prompt_version: QUERY_RERANK_PROMPT_VERSION,
+      },
+      results: reranked,
     };
   }
   return {
@@ -2000,7 +2114,9 @@ export async function run(argv, env = process.env, deps = {}) {
     return "請在 wiki query 後面加上問題。";
   }
   if (command === "query") {
-    return JSON.stringify(query(rest.join(" "), { env }), null, 2);
+    const rerankLlm = rest.includes("--rerank-llm");
+    const question = rest.filter((part) => part !== "--rerank-llm").join(" ");
+    return JSON.stringify(await query(question, { env, ...deps, rerankLlm }), null, 2);
   }
   if (command === "read") {
     return JSON.stringify(readNote(rest[0], { env }), null, 2);

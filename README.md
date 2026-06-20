@@ -47,11 +47,12 @@ wiki status
 wiki sync
 wiki compile
 wiki query "問題"
+wiki query "問題" --rerank-llm
 wiki read <ref>
 wiki links <ref>
 ```
 
-`wiki sync` 只讀 Joplin Data API 並更新 raw cache。`wiki compile` 從本機 raw cache 建立 compiled pages、graph 與 schema。`wiki query`、`wiki read`、`wiki links` 只讀已完成的本機 artifacts，不會在前台查詢時臨時重編全庫。
+`wiki sync` 只讀 Joplin Data API 並更新 raw cache。`wiki compile` 從本機 raw cache 建立 compiled pages、graph 與 schema。`wiki query`、`wiki read`、`wiki links` 只讀已完成的本機 artifacts，不會在前台查詢時臨時重編全庫。`wiki query "問題" --rerank-llm` 是 optional local LLM reranker：它先用本機 keyword query 取 bounded candidates，再請本機 LLM 重新排序 source refs。LLM rerank 不是答案來源；provider 不可用或輸出無效時會以 `LLM_RERANK_UNAVAILABLE` fail closed，不會假裝結果已 rerank。
 
 ## Install Options
 
@@ -89,6 +90,7 @@ Hermes deployment 可以把 `wiki` 裝成固定 command bridge，並在 Hermes s
 
 ```zsh
 wiki query "問題"
+wiki query "問題" --rerank-llm
 wiki read <ref>
 wiki links <ref>
 ```
@@ -134,6 +136,7 @@ wiki status
 wiki sync
 wiki compile
 wiki query "問題"
+wiki query "問題" --rerank-llm
 wiki read <ref>
 wiki links <ref>
 wiki audit
