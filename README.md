@@ -106,6 +106,23 @@ wiki compile
 
 Hermes skill guidance 位於 `packaging/hermes/skills/wiki/SKILL.md`。Hermes 前台回答記憶問題時仍必須使用 compiled source refs；pending draft、semantic score、automation summary 都不是正式事實來源。
 
+### Telegram Tool Router Contract
+
+Hermes Wiki Engine 不擁有 Telegram bot token，也不啟動 Telegram polling。Telegram gateway、Meeting Agent gateway 或其他 chat adapter 若要把 wiki-engine 接進同一個 bot，必須把 wiki 訊息當成 deterministic tool route，而不是交給 Hermes LLM 自行判斷。
+
+穩定 route 形式：
+
+```text
+/wiki status
+/wiki query "Workflow Radar"
+wiki query "Workflow Radar"
+wiki draft show <draft-id> --message-only
+```
+
+adapter 命中 `/wiki` 或 `wiki` route 後，應直接呼叫設定好的本機 `wiki` command，並把 stdout 當成 Telegram 回覆。`wiki` command 不存在、exit non-zero、或輸出 failure 時，也要把 process output 或穩定錯誤回給使用者；不得 fallback 給 Hermes LLM 解釋、補救或改寫成成功敘述。
+
+一般聊天 fallback 不屬於 wiki-engine。外部 Telegram gateway 可以把非 `/wiki`、非 `wiki` 的訊息交給 Hermes LLM，但這個決策必須在 gateway 層處理，不能讓 wiki-engine 變成另一個 Telegram bot，也不能讓兩個 polling 程序搶同一個 bot token。
+
 ### Telegram Sedimentation Replies
 
 Telegram 自然語言對話可以請 Hermes 協助判斷內容是否值得沉澱，但回覆必須依工具結果分層：
