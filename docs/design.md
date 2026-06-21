@@ -238,6 +238,69 @@ Discord personal server allowlist channel
 
 `wiki capture telegram --input <path>` 與 `wiki capture discord --input <path>` 只產生 filesystem draft 與 `capture/runs/<run-id>.json` evidence。disallowed、duplicate、rate-limited events 只記錄 rejection，不建立 draft，不寫回 Joplin。正式沉澱仍必須由 operator review 後執行 `wiki approve`。
 
+Telegram-facing reply contract follows tool-result proof, not model confidence:
+
+- `draft success`: `ok: true` + `state: "drafted"` + `draft_id` means a reviewable filesystem draft exists. The reply must include the `draft_id` and say it has not been written to Joplin.
+- `capture success`: `ok: true` + `state: "capture_ingested"` + `accepted > 0` + `drafts[0].draft_id` means capture created a reviewable filesystem draft. The reply must include that `draft_id` and say it has not been written to Joplin.
+- `approve success`: `ok: true` + `state: "approved"` + `joplin_note_id` means Joplin writeback succeeded. The reply must include the `joplin_note_id`.
+- `empty tool failure`: empty output, invalid JSON, `ok: false`, or missing proof fields means the system cannot confirm draft creation or writeback. The reply must not reuse prepared success copy or expose runtime diagnostics.
+
+Assistant orchestration is owned by the engine, not by each chat adapter. A Telegram, Hermes shell, Discord, or future UI adapter should normalize the conversation event and call `wiki assistant route --input <path>` before choosing any wiki action. The route output is a conversation state machine result: `no_action` lets ordinary chat continue, `failed_closed` returns a safe user-facing message, and `action_required` names the next deterministic bridge.
+
+For `action_required` + `capture_from_resolved_message`, the adapter must execute the returned `capture_input` through `wiki capture telegram --input <path>` and then pipe the capture JSON into `wiki sedimentation reply --message-only`. For `action_required` + `capture_inline_body`, the same review-gated capture flow applies. For `action_required` + `show_draft`, the adapter executes the returned `wiki draft show <draft-id> --message-only` command and sends stdout directly. `ASSISTANT_REPLY_TARGET_UNRESOLVED` and `ASSISTANT_CAPTURE_TARGET_REQUIRED` are terminal fail-closed states for that user turn; the model must not rewrite them into success claims.
+
+Users should be able to use natural-language sedimentation requests such as "這段值得沉澱", "整理成待審草稿", or "等我確認後再寫入 Joplin". 使用者不需要說出 command、JSON pipe、absolute paths, or proof-gate mechanics. The chat layer must infer the review-gated draft intent and route the request. Natural-language sedimentation must not write `/Users/hermes/Drafts`, create Skills, create Memory entries, or claim direct Joplin writeback.
+
+Natural-language sedimentation must preserve conversation context. If the request is sent as a reply to a Telegram message, the adapter must resolve `reply_to_id` through the Hermes session/message store or Telegram message cache, then use the full stored original message as capture content. The user message is routing intent only. `reply_to_text` is a display preview and must not be treated as the authoritative full-content source. Preview text, log-truncated snippets, UI summaries, or obviously cut-off reply text are not acceptable capture content; the adapter must fail closed and ask the user to reply to the complete message, paste the complete body, or provide a readable draft id. If there is no `reply_to_id` or full stored original message, the adapter may use inline body text from the same message only when the message includes substantive content after a colon, newline, or equivalent delimiter. If the message is command-only, such as "這份草稿值得沉澱，幫我整理成待審草稿", the adapter must ask the user to reply to the target message, paste the content, or provide a draft id; it must not create a draft whose content is only the instruction.
+
+Reply-context capture remains disabled until the gateway proves it can resolve `reply_to_id` to the full stored original message. Before that verification exists, the adapter must remain fail-closed and must not pass `reply_to_text` preview into `wiki capture`. Re-enabling reply-context capture requires a runtime test that shows the stored draft content equals the full original message, not a preview or command text.
+
+The deterministic resolver contract is a local message-store bridge. On every Telegram inbound user update, the gateway should write the complete normalized event through `wiki message store telegram --input <path>`. On every outbound bot response, after Telegram returns the sent `message_id`, the gateway must also store the full response text through `wiki message store telegram --input <path>`. This covers the common conversational case where the user replies to a valuable bot response and asks Hermes to turn that bot response into a review-gated draft. On a reply-context sedimentation request, the gateway should call `wiki message resolve telegram --source-id <chat-id> --message-id <reply_to_id>`. A successful `message_resolved` result returns a capture-compatible event containing the full stored original message; that event can then be wrapped as `{"events":[...]}` and passed to `wiki capture telegram --input <path>`. `MESSAGE_NOT_FOUND`, `MESSAGE_TEXT_EMPTY`, missing arguments, or any other resolve failure must keep the flow fail-closed and must not fall back to `reply_to_text`.
+
+Message store is a bounded resolver cache, not a long-term memory layer. The default retention is `WIKI_MESSAGE_STORE_TTL_DAYS=14`, and `wiki message prune telegram` can be run during gateway startup or a daily maintenance job. `wiki message store` also prunes expired cache entries opportunistically. If an expired entry has not been pruned yet, `wiki message resolve` returns `MESSAGE_EXPIRED` and remains fail-closed. The default single-message limit is `WIKI_MESSAGE_STORE_MAX_TEXT_BYTES=131072`; oversized entries are rejected with `MESSAGE_TEXT_TOO_LARGE` instead of being truncated, because truncated resolver content could create incomplete drafts. Pruning only removes `message-store/<source>/*.json` resolver cache entries and must not remove review drafts, capture run evidence, review evidence, compiled wiki artifacts, or Joplin notes.
+
+Runtime integrations should call the CLI guard before user-facing persistence replies:
+
+```text
+draft / capture / approve JSON
+  -> wiki sedimentation reply
+  -> use returned JSON.message in Telegram / Hermes reply
+```
+
+When wiring the next Telegram bot / Hermes dialogue layer, use message-only handoff as the fixed outgoing-message path:
+
+```text
+draft / capture / approve JSON
+  -> wiki sedimentation reply --message-only
+  -> send stdout directly as the Telegram / Hermes outgoing message
+```
+
+The adapter must return stdout directly to Telegram / Hermes and must not let the model rewrite it into a stronger persistence claim such as "已成功存入長期筆記庫".
+
+Draft review uses the same command-bridge principle. Natural-language requests such as "給我看 draft-... 的全文" must route to `wiki draft show <draft-id>` or `wiki draft show <draft-id> --message-only`. Message-only mode returns the draft `content` only, which can be sent directly to Telegram / Hermes. Unknown or unsafe draft ids must fail closed; the model must not search arbitrary `/Users/hermes` paths or infer where draft files live.
+
+Live verification examples:
+
+```zsh
+printf '%s' '{"ok":true,"state":"drafted","draft_id":"draft-test"}' | wiki sedimentation reply
+printf '%s' '{"ok":true,"state":"capture_ingested","accepted":1,"drafts":[{"draft_id":"draft-telegram-test"}]}' | wiki sedimentation reply
+printf '%s' '{"ok":true,"state":"approved","joplin_note_id":"note-abc"}' | wiki sedimentation reply
+printf '' | wiki sedimentation reply
+wiki sedimentation reply --suggested
+printf '%s' '{"ok":true,"state":"drafted","draft_id":"draft-test"}' | wiki sedimentation reply --message-only
+wiki draft show draft-telegram-test --message-only
+```
+
+For Telegram capture, allowlisted source ids must be exported to child processes:
+
+```zsh
+export WIKI_CAPTURE_TELEGRAM_ALLOWLIST=538788141
+```
+
+If an env file only assigns `WIKI_CAPTURE_TELEGRAM_ALLOWLIST=538788141` without `export`, `wiki capture telegram` will not see the value in `process.env` after the runtime launches a child command, and the capture result will be rejected with `CAPTURE_SOURCE_NOT_ALLOWED`.
+
+This repository does not implement a Telegram bot adapter. Hermes, a Telegram gateway, or another external runtime may normalize Telegram input and call the `wiki` command bridge, but transport-level tool orchestration stays outside the core CLI.
+
 Draft 必須包含 provenance：
 
 ```markdown

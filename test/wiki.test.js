@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { defaultStateDir, parseArgs, run } from "../src/wiki.js";
+import { defaultStateDir, formatSedimentationReply, parseArgs, run } from "../src/wiki.js";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 
@@ -85,6 +85,8 @@ test("environment example uses safe placeholders", () => {
     "WIKI_CAPTURE_TELEGRAM_ALLOWLIST",
     "WIKI_CAPTURE_DISCORD_ALLOWLIST",
     "WIKI_CAPTURE_RATE_LIMIT",
+    "WIKI_MESSAGE_STORE_TTL_DAYS",
+    "WIKI_MESSAGE_STORE_MAX_TEXT_BYTES",
     "WIKI_LLM_MODEL",
   ]) {
     assert.match(envExample, new RegExp(`^(?:export )?${key}=`, "m"));
@@ -111,6 +113,111 @@ test("README documents the portable install path and writeback gate", () => {
   }
 });
 
+test("Hermes guidance documents sedimentation reply proof states", () => {
+  const skill = fs.readFileSync(
+    path.join(projectRoot, "packaging", "hermes", "skills", "wiki", "SKILL.md"),
+    "utf8",
+  );
+  const readme = fs.readFileSync(path.join(projectRoot, "README.md"), "utf8");
+  const design = fs.readFileSync(path.join(projectRoot, "docs", "design.md"), "utf8");
+
+  for (const text of [
+    "draft-only success",
+    "approve success",
+    "empty tool failure",
+    "wiki sedimentation reply",
+    "wiki assistant route",
+    "assistant route",
+    "action_required",
+    "capture_from_resolved_message",
+    "capture_inline_body",
+    "show_draft",
+    "ASSISTANT_REPLY_TARGET_UNRESOLVED",
+    "ASSISTANT_CAPTURE_TARGET_REQUIRED",
+    "--message-only",
+    "這段值得沉澱",
+    "reply_to_id",
+    "message store",
+    "wiki message store",
+    "wiki message resolve",
+    "outbound bot response",
+    "bot response",
+    "WIKI_MESSAGE_STORE_TTL_DAYS",
+    "WIKI_MESSAGE_STORE_MAX_TEXT_BYTES",
+    "wiki message prune",
+    "message_resolved",
+    "MESSAGE_NOT_FOUND",
+    "MESSAGE_TEXT_EMPTY",
+    "MESSAGE_EXPIRED",
+    "MESSAGE_TEXT_TOO_LARGE",
+    "fail-closed",
+    "full stored original message",
+    "reply_to_text",
+    "log-truncated snippet",
+    "command-only",
+    "capture success",
+    "CAPTURE_SOURCE_NOT_ALLOWED",
+    "export WIKI_CAPTURE_TELEGRAM_ALLOWLIST",
+    "wiki draft show",
+    "給我看 draft-",
+    "Do not search arbitrary",
+    "Do not require users to say command names",
+    "/Users/hermes/Drafts",
+    "draft_id",
+    "joplin_note_id",
+  ]) {
+    assert.match(skill, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  for (const text of [
+    "draft success",
+    "approve success",
+    "empty tool failure",
+    "wiki sedimentation reply",
+    "wiki assistant route",
+    "assistant route",
+    "action_required",
+    "capture_from_resolved_message",
+    "capture_inline_body",
+    "show_draft",
+    "ASSISTANT_REPLY_TARGET_UNRESOLVED",
+    "ASSISTANT_CAPTURE_TARGET_REQUIRED",
+    "--message-only",
+    "使用者不需要說出 command",
+    "這段值得沉澱",
+    "reply_to_id",
+    "message store",
+    "wiki message store",
+    "wiki message resolve",
+    "outbound bot response",
+    "bot response",
+    "WIKI_MESSAGE_STORE_TTL_DAYS",
+    "WIKI_MESSAGE_STORE_MAX_TEXT_BYTES",
+    "wiki message prune",
+    "message_resolved",
+    "MESSAGE_NOT_FOUND",
+    "MESSAGE_TEXT_EMPTY",
+    "MESSAGE_EXPIRED",
+    "MESSAGE_TEXT_TOO_LARGE",
+    "fail-closed",
+    "full stored original message",
+    "reply_to_text",
+    "log-truncated snippet",
+    "command-only",
+    "capture success",
+    "capture_ingested",
+    "export WIKI_CAPTURE_TELEGRAM_ALLOWLIST",
+    "CAPTURE_SOURCE_NOT_ALLOWED",
+    "wiki draft show",
+    "給我看 draft-",
+    "/Users/hermes/Drafts",
+    "printf '%s'",
+    "Telegram bot adapter",
+  ]) {
+    assert.match(readme, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(design, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
 test("parses known commands", () => {
   assert.deepEqual(parseArgs(["compile"]), { command: "compile", rest: [] });
   assert.deepEqual(parseArgs(["query", "問題"]), { command: "query", rest: ["問題"] });
@@ -127,6 +234,18 @@ test("parses known commands", () => {
     command: "notify",
     rest: ["discord"],
   });
+  assert.deepEqual(parseArgs(["sedimentation", "reply"]), {
+    command: "sedimentation",
+    rest: ["reply"],
+  });
+  assert.deepEqual(parseArgs(["message", "store"]), {
+    command: "message",
+    rest: ["store"],
+  });
+  assert.deepEqual(parseArgs(["assistant", "route"]), {
+    command: "assistant",
+    rest: ["route"],
+  });
 });
 
 test("falls back to help for unknown commands", () => {
@@ -142,6 +261,413 @@ test("uses hermes knowledge state dir by default", () => {
 
 test("query requires a question", async () => {
   assert.equal(await run(["query"]), "請在 wiki query 後面加上問題。");
+});
+
+test("formats suggested sedimentation without claiming persistence", () => {
+  const result = formatSedimentationReply({ kind: "suggested" });
+
+  assert.equal(result.state, "suggested");
+  assert.match(result.message, /待審草稿/);
+  assert.doesNotMatch(result.message, /已寫入 Joplin|已收進筆記庫|已加入長期知識庫/);
+});
+
+test("formats drafted sedimentation with draft proof only", () => {
+  const result = formatSedimentationReply({
+    toolResult: { ok: true, state: "drafted", draft_id: "draft-telegram-123" },
+  });
+
+  assert.equal(result.state, "draft_created");
+  assert.equal(result.draft_id, "draft-telegram-123");
+  assert.match(result.message, /draft-telegram-123/);
+  assert.match(result.message, /尚未寫入 Joplin/);
+  assert.doesNotMatch(result.message, /已寫入 Joplin/);
+});
+
+test("formats capture ingestion with accepted draft proof as draft-created", () => {
+  const result = formatSedimentationReply({
+    toolResult: {
+      ok: true,
+      state: "capture_ingested",
+      run_id: "capture-telegram-20260621-162134",
+      accepted: 1,
+      rejected: 0,
+      drafts: [{ draft_id: "draft-telegram-c3b7a9d2e111", dedupe_key: "telegram:538788141:123" }],
+      rejections: [],
+    },
+  });
+
+  assert.equal(result.state, "draft_created");
+  assert.equal(result.draft_id, "draft-telegram-c3b7a9d2e111");
+  assert.match(result.message, /draft-telegram-c3b7a9d2e111/);
+  assert.match(result.message, /尚未寫入 Joplin/);
+  assert.doesNotMatch(result.message, /已寫入 Joplin/);
+});
+
+test("formats approved sedimentation only with Joplin proof", () => {
+  const result = formatSedimentationReply({
+    toolResult: { ok: true, state: "approved", draft_id: "draft-1", joplin_note_id: "note-abc" },
+  });
+
+  assert.equal(result.state, "approved");
+  assert.equal(result.joplin_note_id, "note-abc");
+  assert.match(result.message, /已寫入 Joplin/);
+  assert.match(result.message, /note-abc/);
+});
+
+test("formats missing or empty sedimentation tool results as failed", () => {
+  for (const toolResult of [
+    "",
+    "↻ Empty response after tool calls — using earlier content as final answer",
+    "{not json",
+    { ok: true, state: "drafted" },
+    { ok: true, state: "capture_ingested", accepted: 0, drafts: [] },
+    { ok: true, state: "capture_ingested", accepted: 1, drafts: [] },
+    { ok: true, state: "approved", draft_id: "draft-1" },
+    { ok: false, code: "JOPLIN_WRITEBACK_FAILED" },
+  ]) {
+    const result = formatSedimentationReply({ toolResult });
+
+    assert.equal(result.state, "failed");
+    assert.match(result.message, /無法確認/);
+    assert.doesNotMatch(result.message, /已寫入 Joplin|已收進筆記庫/);
+    assert.doesNotMatch(result.message, /Empty response after tool calls|using earlier content/);
+  }
+});
+
+test("sedimentation reply command formats draft success from stdin", () => {
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({ ok: true, state: "drafted", draft_id: "draft-test" }),
+      timeout: 5000,
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.state, "draft_created");
+  assert.equal(reply.draft_id, "draft-test");
+  assert.match(reply.message, /draft-test/);
+  assert.match(reply.message, /尚未寫入 Joplin/);
+});
+
+test("sedimentation reply command formats capture success from stdin", () => {
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({
+        ok: true,
+        state: "capture_ingested",
+        accepted: 1,
+        drafts: [{ draft_id: "draft-telegram-capture" }],
+      }),
+      timeout: 5000,
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.state, "draft_created");
+  assert.equal(reply.draft_id, "draft-telegram-capture");
+  assert.match(reply.message, /draft-telegram-capture/);
+  assert.match(reply.message, /尚未寫入 Joplin/);
+});
+
+test("sedimentation reply command formats approve success from stdin", () => {
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({ ok: true, state: "approved", joplin_note_id: "note-abc" }),
+      timeout: 5000,
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.state, "approved");
+  assert.equal(reply.joplin_note_id, "note-abc");
+  assert.match(reply.message, /已寫入 Joplin/);
+  assert.match(reply.message, /note-abc/);
+});
+
+test("sedimentation reply command formats suggested without stdin proof", () => {
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply", "--suggested"],
+    { encoding: "utf8", timeout: 5000 },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.state, "suggested");
+  assert.match(reply.message, /待審草稿/);
+  assert.doesNotMatch(reply.message, /已寫入 Joplin|已收進筆記庫/);
+});
+
+test("sedimentation reply command can output message only for chat adapters", () => {
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply", "--message-only"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({ ok: true, state: "drafted", draft_id: "draft-message" }),
+      timeout: 5000,
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /draft-message/);
+  assert.match(result.stdout, /尚未寫入 Joplin/);
+  assert.doesNotMatch(result.stdout, /"state"|"draft_id"|已寫入 Joplin|已收進筆記庫/);
+});
+
+test("sedimentation reply message-only mode fails closed for empty stdin", () => {
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply", "--message-only"],
+    { encoding: "utf8", input: "", timeout: 5000 },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /無法確認/);
+  assert.doesNotMatch(result.stdout, /"state"|"ok"|已寫入 Joplin|已收進筆記庫|Empty response after tool calls/);
+});
+
+test("sedimentation reply command fails closed for empty or invalid stdin", () => {
+  for (const input of [
+    "",
+    "{not json",
+    JSON.stringify({ ok: false, code: "FAILED" }),
+    JSON.stringify({ ok: true, state: "drafted" }),
+    JSON.stringify({ ok: true, state: "capture_ingested", accepted: 0, drafts: [] }),
+    JSON.stringify({ ok: true, state: "approved" }),
+  ]) {
+    const result = spawnSync(
+      "node",
+      [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply"],
+      { encoding: "utf8", input, timeout: 5000 },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const reply = JSON.parse(result.stdout);
+    assert.equal(reply.state, "failed");
+    assert.match(reply.message, /無法確認/);
+    assert.doesNotMatch(reply.message, /已寫入 Joplin|已收進筆記庫|Empty response after tool calls/);
+  }
+});
+
+test("sedimentation reply command is read-only and does not need runtime state", () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-sedimentation-"));
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "sedimentation", "reply"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({ ok: true, state: "drafted", draft_id: "draft-readonly" }),
+      env: { ...process.env, WIKI_STATE_DIR: stateDir, WIKI_JOPLIN_TOKEN: "" },
+      timeout: 5000,
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(fs.readdirSync(stateDir), []);
+});
+
+test("assistant route fails closed for missing or invalid input", () => {
+  const missing = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", "/tmp/wiki-missing-input.json"],
+    { encoding: "utf8", timeout: 5000 },
+  );
+
+  assert.equal(missing.status, 0, missing.stderr);
+  const missingReply = JSON.parse(missing.stdout);
+  assert.equal(missingReply.ok, false);
+  assert.equal(missingReply.state, "failed_closed");
+  assert.equal(missingReply.code, "ASSISTANT_INPUT_MISSING");
+  assert.doesNotMatch(missingReply.message, /Error:|Traceback|token|secret/i);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-assistant-"));
+  const invalidPath = path.join(tmpDir, "invalid.json");
+  fs.writeFileSync(invalidPath, "{not json");
+  const invalid = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", invalidPath],
+    { encoding: "utf8", timeout: 5000 },
+  );
+
+  assert.equal(invalid.status, 0, invalid.stderr);
+  const invalidReply = JSON.parse(invalid.stdout);
+  assert.equal(invalidReply.ok, false);
+  assert.equal(invalidReply.state, "failed_closed");
+  assert.equal(invalidReply.code, "ASSISTANT_INPUT_INVALID");
+  assert.doesNotMatch(invalidReply.message, /SyntaxError|Unexpected token|stack|secret/i);
+});
+
+test("assistant route passes through non-wiki conversation", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-assistant-"));
+  const inputPath = path.join(tmpDir, "event.json");
+  fs.writeFileSync(
+    inputPath,
+    JSON.stringify({ platform: "telegram", source_id: "chat-1", message_id: "m-1", text: "今天天氣如何？" }),
+  );
+
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", inputPath],
+    { encoding: "utf8", timeout: 5000 },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.state, "no_action");
+  assert.equal(reply.capture_input, undefined);
+});
+
+test("assistant route keeps reply sedimentation unresolved fail-closed", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-assistant-"));
+  const inputPath = path.join(tmpDir, "event.json");
+  fs.writeFileSync(
+    inputPath,
+    JSON.stringify({
+      platform: "telegram",
+      source_id: "chat-1",
+      message_id: "m-2",
+      text: "這段值得沉澱，整理成待審草稿",
+      reply_to_id: "bot-42",
+      reply_to_text: "截斷 preview",
+    }),
+  );
+
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", inputPath],
+    { encoding: "utf8", timeout: 5000 },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.ok, false);
+  assert.equal(reply.state, "failed_closed");
+  assert.equal(reply.code, "ASSISTANT_REPLY_TARGET_UNRESOLVED");
+  assert.equal(reply.capture_input, undefined);
+  assert.match(reply.message, /完整原文/);
+});
+
+test("assistant route uses resolved full message instead of reply preview", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-assistant-"));
+  const inputPath = path.join(tmpDir, "event.json");
+  fs.writeFileSync(
+    inputPath,
+    JSON.stringify({
+      platform: "telegram",
+      source_id: "chat-1",
+      message_id: "m-3",
+      author_handle: "user",
+      timestamp: "2026-06-21T12:00:00Z",
+      text: "這段值得沉澱，整理成待審草稿",
+      reply_to_id: "bot-42",
+      reply_to_text: "截斷 preview",
+      resolved_event: {
+        source_id: "chat-1",
+        message_id: "bot-42",
+        author_handle: "hermes-bot",
+        timestamp: "2026-06-21T11:59:00Z",
+        text: "完整的 Hermes bot 回答，包含所有段落。",
+      },
+    }),
+  );
+
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", inputPath],
+    { encoding: "utf8", timeout: 5000 },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.state, "action_required");
+  assert.equal(reply.action, "capture_from_resolved_message");
+  assert.equal(reply.capture_input.events[0].text, "完整的 Hermes bot 回答，包含所有段落。");
+  assert.notEqual(reply.capture_input.events[0].text, "截斷 preview");
+  assert.notEqual(reply.capture_input.events[0].text, "這段值得沉澱，整理成待審草稿");
+});
+
+test("assistant route separates command-only and inline sedimentation requests", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-assistant-"));
+  const commandOnlyPath = path.join(tmpDir, "command-only.json");
+  fs.writeFileSync(
+    commandOnlyPath,
+    JSON.stringify({ platform: "telegram", source_id: "chat-1", message_id: "m-4", text: "這段值得沉澱" }),
+  );
+
+  const commandOnly = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", commandOnlyPath],
+    { encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(commandOnly.status, 0, commandOnly.stderr);
+  const commandOnlyReply = JSON.parse(commandOnly.stdout);
+  assert.equal(commandOnlyReply.ok, false);
+  assert.equal(commandOnlyReply.code, "ASSISTANT_CAPTURE_TARGET_REQUIRED");
+  assert.equal(commandOnlyReply.capture_input, undefined);
+
+  const inlinePath = path.join(tmpDir, "inline.json");
+  fs.writeFileSync(
+    inlinePath,
+    JSON.stringify({
+      platform: "telegram",
+      source_id: "chat-1",
+      message_id: "m-5",
+      text: "整理成待審草稿：這是要沉澱的完整正文。",
+    }),
+  );
+
+  const inline = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", inlinePath],
+    { encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(inline.status, 0, inline.stderr);
+  const inlineReply = JSON.parse(inline.stdout);
+  assert.equal(inlineReply.ok, true);
+  assert.equal(inlineReply.action, "capture_inline_body");
+  assert.equal(inlineReply.capture_input.events[0].text, "這是要沉澱的完整正文。");
+});
+
+test("assistant route sends draft review to draft show bridge", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-assistant-"));
+  const inputPath = path.join(tmpDir, "draft-show.json");
+  fs.writeFileSync(
+    inputPath,
+    JSON.stringify({
+      platform: "telegram",
+      source_id: "chat-1",
+      message_id: "m-6",
+      text: "給我看 draft-telegram-abc123 的全文",
+    }),
+  );
+
+  const result = spawnSync(
+    "node",
+    [path.join(projectRoot, "src", "wiki.js"), "assistant", "route", "--input", inputPath],
+    { encoding: "utf8", timeout: 5000 },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const reply = JSON.parse(result.stdout);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.action, "show_draft");
+  assert.deepEqual(reply.commands[0], ["wiki", "draft", "show", "draft-telegram-abc123", "--message-only"]);
+  assert.equal(reply.capture_input, undefined);
 });
 
 test("cli prints output when executed through a package-manager symlink", () => {
@@ -3066,6 +3592,356 @@ test("capture ingestion records disallowed and duplicate rejection evidence", as
     "telegram:chat-unknown:msg-1",
     "telegram:chat-allowed:msg-2",
   ]);
+});
+
+test("message store resolves reply target into a full capture event", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-message-store-"));
+  const inputPath = path.join(stateDir, "telegram-messages.json");
+  const fullText = [
+    "產品設計思維轉換草稿",
+    "第一段完整內容，不能只保存 Telegram reply preview。",
+    "第二段完整內容，後續要等於 draft content。",
+  ].join("\n");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-full-1",
+          author_handle: "@alice",
+          timestamp: "2026-06-21T09:00:00.000Z",
+          text: fullText,
+        },
+      ],
+    })}\n`,
+  );
+
+  const stored = JSON.parse(
+    await run(
+      ["message", "store", "telegram", "--input", inputPath],
+      { WIKI_STATE_DIR: stateDir },
+      { now: () => new Date("2026-06-21T09:01:00.000Z") },
+    ),
+  );
+  const resolved = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "msg-full-1"],
+      { WIKI_STATE_DIR: stateDir },
+    ),
+  );
+  const captureInputPath = path.join(stateDir, "resolved-capture.json");
+  fs.writeFileSync(captureInputPath, `${JSON.stringify({ events: [resolved.event] })}\n`);
+  const captureResult = JSON.parse(
+    await run(
+      ["capture", "telegram", "--input", captureInputPath],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_CAPTURE_TELEGRAM_ALLOWLIST: "chat-allowed",
+      },
+      { now: () => new Date("2026-06-21T09:02:00.000Z") },
+    ),
+  );
+  const draft = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "drafts", `${captureResult.drafts[0].draft_id}.json`), "utf8"),
+  );
+
+  assert.equal(stored.ok, true);
+  assert.equal(stored.state, "messages_stored");
+  assert.equal(stored.accepted, 1);
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.state, "message_resolved");
+  assert.deepEqual(resolved.event, {
+    source_id: "chat-allowed",
+    message_id: "msg-full-1",
+    author_handle: "@alice",
+    timestamp: "2026-06-21T09:00:00.000Z",
+    text: fullText,
+  });
+  assert.equal(resolved.text_length, fullText.length);
+  assert.match(resolved.text_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(draft.content, fullText);
+});
+
+test("message store resolves an outbound bot response into a capture event", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-message-store-"));
+  const inputPath = path.join(stateDir, "telegram-bot-response.json");
+  const botResponse = [
+    "這是機器人回覆中值得沉澱的完整內容。",
+    "使用者會回覆這則 bot response 要求整理成待審草稿。",
+  ].join("\n");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "bot-response-1",
+          author_handle: "hermes-bot",
+          timestamp: "2026-06-21T09:05:00.000Z",
+          text: botResponse,
+        },
+      ],
+    })}\n`,
+  );
+
+  const stored = JSON.parse(
+    await run(["message", "store", "telegram", "--input", inputPath], { WIKI_STATE_DIR: stateDir }),
+  );
+  const resolved = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "bot-response-1"],
+      { WIKI_STATE_DIR: stateDir },
+    ),
+  );
+
+  assert.equal(stored.ok, true);
+  assert.equal(stored.state, "messages_stored");
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.event.author_handle, "hermes-bot");
+  assert.equal(resolved.event.text, botResponse);
+});
+
+test("message resolve fails closed when reply target is missing or empty", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-message-store-"));
+  const inputPath = path.join(stateDir, "telegram-messages.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-empty",
+          author_handle: "@alice",
+          timestamp: "2026-06-21T09:00:00.000Z",
+          text: "",
+        },
+      ],
+    })}\n`,
+  );
+
+  const stored = JSON.parse(
+    await run(["message", "store", "telegram", "--input", inputPath], { WIKI_STATE_DIR: stateDir }),
+  );
+  const missing = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "msg-missing"],
+      { WIKI_STATE_DIR: stateDir },
+    ),
+  );
+  const empty = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "msg-empty"],
+      { WIKI_STATE_DIR: stateDir },
+    ),
+  );
+
+  assert.equal(stored.ok, true);
+  assert.equal(stored.accepted, 1);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, "MESSAGE_NOT_FOUND");
+  assert.equal(empty.ok, false);
+  assert.equal(empty.code, "MESSAGE_TEXT_EMPTY");
+});
+
+test("message store rejects oversized resolver cache entries", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-message-store-"));
+  const inputPath = path.join(stateDir, "telegram-large-message.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-large",
+          author_handle: "@alice",
+          timestamp: "2026-06-21T09:00:00.000Z",
+          text: "這段文字超過 byte limit",
+        },
+      ],
+    })}\n`,
+  );
+
+  const stored = JSON.parse(
+    await run(
+      ["message", "store", "telegram", "--input", inputPath],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_MESSAGE_STORE_MAX_TEXT_BYTES: "8",
+      },
+    ),
+  );
+  const resolved = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "msg-large"],
+      { WIKI_STATE_DIR: stateDir },
+    ),
+  );
+
+  assert.equal(stored.ok, true);
+  assert.equal(stored.accepted, 0);
+  assert.equal(stored.rejected, 1);
+  assert.equal(stored.rejections[0].reason, "MESSAGE_TEXT_TOO_LARGE");
+  assert.equal(resolved.ok, false);
+  assert.equal(resolved.code, "MESSAGE_NOT_FOUND");
+});
+
+test("message prune removes expired resolver cache entries", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-message-store-"));
+  const inputPath = path.join(stateDir, "telegram-old-message.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-old",
+          author_handle: "@alice",
+          timestamp: "2026-06-01T09:00:00.000Z",
+          text: "old resolver cache text",
+        },
+      ],
+    })}\n`,
+  );
+
+  const stored = JSON.parse(
+    await run(
+      ["message", "store", "telegram", "--input", inputPath],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_MESSAGE_STORE_TTL_DAYS: "14",
+      },
+      { now: () => new Date("2026-06-01T09:01:00.000Z") },
+    ),
+  );
+  const beforePrune = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "msg-old"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_MESSAGE_STORE_TTL_DAYS: "14",
+      },
+      { now: () => new Date("2026-06-10T09:00:00.000Z") },
+    ),
+  );
+  const pruned = JSON.parse(
+    await run(
+      ["message", "prune", "telegram"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_MESSAGE_STORE_TTL_DAYS: "14",
+      },
+      { now: () => new Date("2026-06-20T09:00:00.000Z") },
+    ),
+  );
+  const afterPrune = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "msg-old"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_MESSAGE_STORE_TTL_DAYS: "14",
+      },
+      { now: () => new Date("2026-06-20T09:01:00.000Z") },
+    ),
+  );
+
+  assert.equal(stored.accepted, 1);
+  assert.equal(beforePrune.ok, true);
+  assert.equal(pruned.ok, true);
+  assert.equal(pruned.state, "message_store_pruned");
+  assert.equal(pruned.pruned, 1);
+  assert.equal(afterPrune.ok, false);
+  assert.equal(afterPrune.code, "MESSAGE_NOT_FOUND");
+});
+
+test("message resolve fails closed for expired resolver cache entries", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-message-store-"));
+  const inputPath = path.join(stateDir, "telegram-expired-message.json");
+  fs.writeFileSync(
+    inputPath,
+    `${JSON.stringify({
+      events: [
+        {
+          source_id: "chat-allowed",
+          message_id: "msg-expired",
+          author_handle: "@alice",
+          timestamp: "2026-06-01T09:00:00.000Z",
+          text: "expired resolver cache text",
+        },
+      ],
+    })}\n`,
+  );
+
+  const stored = JSON.parse(
+    await run(
+      ["message", "store", "telegram", "--input", inputPath],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_MESSAGE_STORE_TTL_DAYS: "14",
+      },
+      { now: () => new Date("2026-06-01T09:01:00.000Z") },
+    ),
+  );
+  const expired = JSON.parse(
+    await run(
+      ["message", "resolve", "telegram", "--source-id", "chat-allowed", "--message-id", "msg-expired"],
+      {
+        WIKI_STATE_DIR: stateDir,
+        WIKI_MESSAGE_STORE_TTL_DAYS: "14",
+      },
+      { now: () => new Date("2026-06-20T09:00:00.000Z") },
+    ),
+  );
+
+  assert.equal(stored.accepted, 1);
+  assert.equal(expired.ok, false);
+  assert.equal(expired.code, "MESSAGE_EXPIRED");
+});
+
+test("draft show loads review-gated draft content for chat review", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-show-"));
+  const draftId = "draft-telegram-review123";
+  fs.mkdirSync(path.join(stateDir, "drafts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "drafts", `${draftId}.json`),
+    `${JSON.stringify({
+      draft_id: draftId,
+      kind: "telegram",
+      status: "pending_review",
+      created_at: "2026-06-21T08:30:00.000Z",
+      content: "測試草稿全文\n第二行內容",
+      provenance: { source: "telegram", source_id: "538788141", message_id: "msg-1" },
+      intended_target: {
+        type: "joplin_inbox",
+        notebook_id: "",
+        conflict_behavior: "manual_review",
+      },
+    })}\n`,
+  );
+
+  const result = JSON.parse(await run(["draft", "show", draftId], { WIKI_STATE_DIR: stateDir }));
+  const messageOnly = await run(["draft", "show", draftId, "--message-only"], { WIKI_STATE_DIR: stateDir });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "draft_loaded");
+  assert.equal(result.draft_id, draftId);
+  assert.equal(result.status, "pending_review");
+  assert.equal(result.content, "測試草稿全文\n第二行內容");
+  assert.equal(result.path, `drafts/${draftId}.json`);
+  assert.equal(messageOnly, "測試草稿全文\n第二行內容");
+});
+
+test("draft show fails closed for unknown or unsafe draft ids", async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-draft-show-"));
+  const missing = JSON.parse(await run(["draft", "show", "draft-missing"], { WIKI_STATE_DIR: stateDir }));
+  const unsafe = JSON.parse(await run(["draft", "show", "../draft-missing"], { WIKI_STATE_DIR: stateDir }));
+  const missingMessage = await run(["draft", "show", "draft-missing", "--message-only"], { WIKI_STATE_DIR: stateDir });
+
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, "DRAFT_NOT_FOUND");
+  assert.equal(unsafe.ok, false);
+  assert.equal(unsafe.code, "DRAFT_NOT_FOUND");
+  assert.equal(missingMessage, "Draft was not found.");
 });
 
 test("capture ingestion applies rate limit evidence", async () => {

@@ -17,8 +17,11 @@ const COMMANDS = new Set([
   "audit",
   "automate",
   "semantic",
+  "assistant",
   "capture",
+  "message",
   "notify",
+  "sedimentation",
   "draft",
   "approve",
 ]);
@@ -60,6 +63,262 @@ export function status(stateDir = defaultStateDir()) {
 
 function safeError(code, message) {
   return { ok: false, code, message };
+}
+
+function parseToolResult(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+export function formatSedimentationReply({ kind = "", toolResult } = {}) {
+  if (kind === "suggested" && toolResult === undefined) {
+    return {
+      ok: true,
+      state: "suggested",
+      message: "這段內容適合整理成待審草稿。尚未建立草稿，也尚未寫入 Joplin。",
+    };
+  }
+
+  const parsed = parseToolResult(toolResult);
+  if (!parsed || parsed.ok !== true) {
+    return {
+      ok: false,
+      state: "failed",
+      message: "工具沒有提供可驗證結果，無法確認已建立草稿或已寫回 Joplin。",
+    };
+  }
+
+  if (parsed.state === "drafted" && parsed.draft_id) {
+    return {
+      ok: true,
+      state: "draft_created",
+      draft_id: parsed.draft_id,
+      message: `已建立待審草稿：${parsed.draft_id}。尚未寫入 Joplin，需 review 後再 approve。`,
+    };
+  }
+
+  if (
+    parsed.state === "capture_ingested" &&
+    Number(parsed.accepted) > 0 &&
+    Array.isArray(parsed.drafts) &&
+    parsed.drafts[0]?.draft_id
+  ) {
+    const draftId = parsed.drafts[0].draft_id;
+    return {
+      ok: true,
+      state: "draft_created",
+      draft_id: draftId,
+      message: `已建立待審草稿：${draftId}。尚未寫入 Joplin，需 review 後再 approve。`,
+    };
+  }
+
+  if (parsed.state === "approved" && parsed.joplin_note_id) {
+    return {
+      ok: true,
+      state: "approved",
+      draft_id: parsed.draft_id || "",
+      joplin_note_id: parsed.joplin_note_id,
+      message: `已寫入 Joplin。這是 wiki approve 成功後的結果。Joplin note id：${parsed.joplin_note_id}。`,
+    };
+  }
+
+  return {
+    ok: false,
+    state: "failed",
+    message: "工具結果缺少必要證據，無法確認已建立草稿或已寫回 Joplin。",
+  };
+}
+
+function readStdin() {
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function sedimentationReply(rest = [], { stdin } = {}) {
+  if (rest[0] !== "reply") {
+    return safeError("WIKI_SEDIMENTATION_COMMAND_UNKNOWN", "Unknown sedimentation command.");
+  }
+  const messageOnly = rest.includes("--message-only");
+  const result = rest.includes("--suggested")
+    ? formatSedimentationReply({ kind: "suggested" })
+    : formatSedimentationReply({ toolResult: stdin ?? readStdin() });
+  if (messageOnly) return result.message;
+  return result;
+}
+
+function assistantError(code, message) {
+  return { ok: false, state: "failed_closed", code, message };
+}
+
+function readAssistantInput(rest = []) {
+  const inputPath = optionValue(rest, "--input");
+  if (!inputPath || !fs.existsSync(inputPath)) {
+    return {
+      ok: false,
+      error: assistantError("ASSISTANT_INPUT_MISSING", "Assistant input file is missing."),
+    };
+  }
+  try {
+    return { ok: true, event: readJson(inputPath) };
+  } catch {
+    return {
+      ok: false,
+      error: assistantError("ASSISTANT_INPUT_INVALID", "Assistant input JSON is invalid."),
+    };
+  }
+}
+
+function assistantText(event) {
+  return String(event?.text || "").trim();
+}
+
+function assistantHasSedimentationIntent(text) {
+  return ["沉澱", "待審草稿", "寫入 Joplin", "正式寫入 Joplin"].some((term) => text.includes(term));
+}
+
+function assistantHasDraftReviewIntent(text) {
+  return ["全文", "草稿全文", "草稿", "審閱", "查看", "讀取", "看", "show", "review"].some((term) =>
+    text.includes(term),
+  );
+}
+
+function assistantDraftId(text) {
+  return text.match(/draft-[A-Za-z0-9_-]+/)?.[0] || "";
+}
+
+function assistantInlineBody(text) {
+  for (const delimiter of ["：", ":", "\n\n", "\n"]) {
+    if (!text.includes(delimiter)) continue;
+    const body = text.split(delimiter, 2)[1].trim();
+    if (body) return body;
+  }
+  return "";
+}
+
+function assistantCaptureEventFromResolved(event, resolvedEvent) {
+  return {
+    source_id: String(resolvedEvent.source_id || event.source_id || event.chat_id || event.channel_id || ""),
+    message_id: String(resolvedEvent.message_id || event.reply_to_id || ""),
+    author_handle: String(resolvedEvent.author_handle || ""),
+    timestamp: resolvedEvent.timestamp || "",
+    text: String(resolvedEvent.text || ""),
+  };
+}
+
+function assistantCaptureEventFromInline(event, text) {
+  return {
+    source_id: String(event.source_id || event.chat_id || event.channel_id || ""),
+    message_id: String(event.message_id || ""),
+    author_handle: String(event.author_handle || ""),
+    timestamp: event.timestamp || "",
+    text,
+  };
+}
+
+export function routeAssistant(rest = []) {
+  if (rest[0] !== "route") {
+    return assistantError("WIKI_ASSISTANT_COMMAND_UNKNOWN", "Unknown assistant command.");
+  }
+  const input = readAssistantInput(rest.slice(1));
+  if (!input.ok) return input.error;
+
+  const event = input.event || {};
+  const text = assistantText(event);
+  const draftId = assistantDraftId(text);
+  const hasReviewIntent = assistantHasDraftReviewIntent(text);
+
+  if (hasReviewIntent && text.includes("draft-") && !draftId) {
+    return assistantError("ASSISTANT_DRAFT_ID_INVALID", "Draft id is not safe to review.");
+  }
+  if (hasReviewIntent && draftId) {
+    return {
+      ok: true,
+      state: "action_required",
+      action: "show_draft",
+      draft_id: draftId,
+      message: "請透過 wiki draft show 讀取待審草稿全文。",
+      commands: [["wiki", "draft", "show", draftId, "--message-only"]],
+      proof: { draft_id: draftId },
+    };
+  }
+
+  if (!assistantHasSedimentationIntent(text)) {
+    return {
+      ok: true,
+      state: "no_action",
+      message: "No wiki assistant action is required.",
+    };
+  }
+
+  const replyToId = String(event.reply_to_id || event.reply_to_message_id || "").trim();
+  if (replyToId) {
+    const resolvedEvent = event.resolved_event && typeof event.resolved_event === "object" ? event.resolved_event : null;
+    const resolvedText = String(resolvedEvent?.text || "").trim();
+    if (!resolvedEvent || !resolvedText) {
+      return {
+        ...assistantError(
+          "ASSISTANT_REPLY_TARGET_UNRESOLVED",
+          "我找不到被回覆訊息的完整原文，不能建立不完整草稿。請回覆一則已保存完整內容的訊息，或直接貼上完整正文後再說要沉澱。",
+        ),
+        proof: {
+          source_id: String(event.source_id || event.chat_id || event.channel_id || ""),
+          reply_to_id: replyToId,
+        },
+      };
+    }
+    const captureEvent = assistantCaptureEventFromResolved(event, resolvedEvent);
+    return {
+      ok: true,
+      state: "action_required",
+      action: "capture_from_resolved_message",
+      message: "已找到被回覆訊息的完整原文，可以建立待審草稿。",
+      capture_input: { events: [captureEvent] },
+      commands: [
+        ["wiki", "capture", String(event.platform || "telegram"), "--input", "<capture-input-json>"],
+        ["wiki", "sedimentation", "reply", "--message-only"],
+      ],
+      proof: {
+        source_id: String(event.source_id || event.chat_id || event.channel_id || ""),
+        reply_to_id: replyToId,
+        resolved_message_id: captureEvent.message_id,
+      },
+    };
+  }
+
+  const inlineBody = assistantInlineBody(text);
+  if (!inlineBody) {
+    return assistantError(
+      "ASSISTANT_CAPTURE_TARGET_REQUIRED",
+      "請回覆要沉澱的那則訊息，或在這句後面貼上要沉澱的完整內容；我不會只把指令本身建立成草稿。",
+    );
+  }
+
+  return {
+    ok: true,
+    state: "action_required",
+    action: "capture_inline_body",
+    message: "已取得同一則訊息中的完整正文，可以建立待審草稿。",
+    capture_input: { events: [assistantCaptureEventFromInline(event, inlineBody)] },
+    commands: [
+      ["wiki", "capture", String(event.platform || "telegram"), "--input", "<capture-input-json>"],
+      ["wiki", "sedimentation", "reply", "--message-only"],
+    ],
+    proof: {
+      source_id: String(event.source_id || event.chat_id || event.channel_id || ""),
+      message_id: String(event.message_id || ""),
+    },
+  };
 }
 
 function writeJson(filePath, data) {
@@ -1919,6 +2178,205 @@ function captureRunId(source, date) {
   return `${source}-${automationRunId(date)}`;
 }
 
+function messageStoreKey(sourceId, messageId) {
+  return crypto.createHash("sha256").update(`${sourceId}\0${messageId}`).digest("hex");
+}
+
+function messageStorePath(stateDir, source, sourceId, messageId) {
+  return path.join(stateDir, "message-store", source, `${messageStoreKey(sourceId, messageId)}.json`);
+}
+
+function messageStoreTtlDays(env = process.env) {
+  const parsed = Number.parseInt(env.WIKI_MESSAGE_STORE_TTL_DAYS || "14", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 14;
+}
+
+function messageStoreMaxTextBytes(env = process.env) {
+  const parsed = Number.parseInt(env.WIKI_MESSAGE_STORE_MAX_TEXT_BYTES || `${128 * 1024}`, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 128 * 1024;
+}
+
+function messageStoredAt(stored) {
+  const value = stored.stored_at || stored.timestamp || "";
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function messageIsExpired(stored, env, now) {
+  const storedAt = messageStoredAt(stored);
+  if (storedAt === null) return false;
+  const ttlMs = messageStoreTtlDays(env) * 24 * 60 * 60 * 1000;
+  return storedAt < now().getTime() - ttlMs;
+}
+
+function optionValue(rest, name) {
+  const index = rest.indexOf(name);
+  return index >= 0 ? rest[index + 1] : "";
+}
+
+function messageEventFromStored(stored) {
+  return {
+    source_id: stored.source_id || "",
+    message_id: stored.message_id || "",
+    author_handle: stored.author_handle || "",
+    timestamp: stored.timestamp || "",
+    text: stored.text || "",
+  };
+}
+
+export function storeMessages(source, rest = [], { env = process.env, now = () => new Date() } = {}) {
+  if (!["telegram", "discord"].includes(source)) {
+    return safeError("MESSAGE_SOURCE_UNSUPPORTED", "Message source is not supported.");
+  }
+  const inputPath = captureInputPath(rest);
+  if (!inputPath || !fs.existsSync(inputPath)) {
+    return safeError("MESSAGE_INPUT_MISSING", "Message input file is missing.");
+  }
+  const stateDir = defaultStateDir(env);
+  const runDate = now();
+  const maxTextBytes = messageStoreMaxTextBytes(env);
+  const events = readJson(inputPath).events || [];
+  const stored = [];
+  const rejections = [];
+  for (const event of events) {
+    const sourceId = String(event.source_id || event.chat_id || event.channel_id || "");
+    const messageId = String(event.message_id || "");
+    const reject = (reason) => rejections.push({ reason, source_id: sourceId, message_id: messageId });
+    if (!sourceId || !messageId) {
+      reject("MESSAGE_ID_MISSING");
+      continue;
+    }
+    const text = String(event.text ?? event.caption ?? "");
+    const textBytes = Buffer.byteLength(text, "utf8");
+    if (textBytes > maxTextBytes) {
+      rejections.push({
+        reason: "MESSAGE_TEXT_TOO_LARGE",
+        source_id: sourceId,
+        message_id: messageId,
+        text_bytes: textBytes,
+        max_text_bytes: maxTextBytes,
+      });
+      continue;
+    }
+    const record = {
+      platform: source,
+      source_id: sourceId,
+      message_id: messageId,
+      author_handle: String(event.author_handle || ""),
+      timestamp: event.timestamp || "",
+      text,
+      raw_json: event,
+      text_sha256: crypto.createHash("sha256").update(text).digest("hex"),
+      text_length: text.length,
+      text_bytes: textBytes,
+      stored_at: runDate.toISOString(),
+      expires_at: new Date(runDate.getTime() + messageStoreTtlDays(env) * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    writeJson(messageStorePath(stateDir, source, sourceId, messageId), record);
+    stored.push({
+      source_id: sourceId,
+      message_id: messageId,
+      text_sha256: record.text_sha256,
+      text_length: record.text_length,
+    });
+  }
+  const runId = `message-${captureRunId(source, runDate)}`;
+  writeJson(path.join(stateDir, "message-store", "runs", `${runId}.json`), {
+    run_id: runId,
+    source,
+    created_at: runDate.toISOString(),
+    accepted: stored.length,
+    rejected: rejections.length,
+    stored,
+    rejections,
+    ttl_days: messageStoreTtlDays(env),
+    max_text_bytes: maxTextBytes,
+  });
+  const pruneResult = pruneMessages(source, [], { env, now });
+  return {
+    ok: true,
+    state: "messages_stored",
+    run_id: runId,
+    accepted: stored.length,
+    rejected: rejections.length,
+    stored,
+    rejections,
+    ttl_days: messageStoreTtlDays(env),
+    max_text_bytes: maxTextBytes,
+    pruned: pruneResult.pruned,
+    path: path.join("message-store", "runs", `${runId}.json`),
+  };
+}
+
+export function resolveMessage(source, rest = [], { env = process.env, now = () => new Date() } = {}) {
+  if (!["telegram", "discord"].includes(source)) {
+    return safeError("MESSAGE_SOURCE_UNSUPPORTED", "Message source is not supported.");
+  }
+  const sourceId = optionValue(rest, "--source-id") || optionValue(rest, "--chat-id") || optionValue(rest, "--channel-id");
+  const messageId = optionValue(rest, "--message-id") || optionValue(rest, "--reply-to-id");
+  if (!sourceId || !messageId) {
+    return safeError("MESSAGE_RESOLVE_ARGUMENT_MISSING", "Message source id and message id are required.");
+  }
+  const storePath = messageStorePath(defaultStateDir(env), source, String(sourceId), String(messageId));
+  if (!fs.existsSync(storePath)) {
+    return safeError("MESSAGE_NOT_FOUND", "Full original message was not found.");
+  }
+  const stored = readJson(storePath);
+  if (messageIsExpired(stored, env, now)) {
+    return safeError("MESSAGE_EXPIRED", "Stored original message is outside the resolver cache retention window.");
+  }
+  const event = messageEventFromStored(stored);
+  if (!event.text.trim()) {
+    return safeError("MESSAGE_TEXT_EMPTY", "Stored original message has no text content.");
+  }
+  return {
+    ok: true,
+    state: "message_resolved",
+    source,
+    event,
+    text_sha256: stored.text_sha256 || crypto.createHash("sha256").update(event.text).digest("hex"),
+    text_length: Number(stored.text_length) || event.text.length,
+    text_bytes: Number(stored.text_bytes) || Buffer.byteLength(event.text, "utf8"),
+    stored_at: stored.stored_at || "",
+    expires_at: stored.expires_at || "",
+    path: path.join("message-store", source, `${messageStoreKey(sourceId, messageId)}.json`),
+  };
+}
+
+export function pruneMessages(source = "", rest = [], { env = process.env, now = () => new Date() } = {}) {
+  const sources = source ? [source] : ["telegram", "discord"];
+  if (source && !["telegram", "discord"].includes(source)) {
+    return safeError("MESSAGE_SOURCE_UNSUPPORTED", "Message source is not supported.");
+  }
+  const stateDir = defaultStateDir(env);
+  const prunedPaths = [];
+  for (const currentSource of sources) {
+    const sourceDir = path.join(stateDir, "message-store", currentSource);
+    if (!fs.existsSync(sourceDir)) continue;
+    for (const entry of fs.readdirSync(sourceDir)) {
+      if (!entry.endsWith(".json")) continue;
+      const filePath = path.join(sourceDir, entry);
+      let stored;
+      try {
+        stored = readJson(filePath);
+      } catch {
+        continue;
+      }
+      if (messageIsExpired(stored, env, now)) {
+        fs.unlinkSync(filePath);
+        prunedPaths.push(path.join("message-store", currentSource, entry));
+      }
+    }
+  }
+  return {
+    ok: true,
+    state: "message_store_pruned",
+    ttl_days: messageStoreTtlDays(env),
+    pruned: prunedPaths.length,
+    paths: prunedPaths,
+  };
+}
+
 export function capture(source, rest = [], { env = process.env, now = () => new Date() } = {}) {
   if (!["telegram", "discord"].includes(source)) {
     return safeError("CAPTURE_SOURCE_UNSUPPORTED", "Capture source is not supported.");
@@ -2051,6 +2509,34 @@ export function rejectDraft(draftId, { env = process.env, now = () => new Date()
   draftData.status = "rejected";
   writeJson(draftPath, draftData);
   return { ok: true, state: "rejected", draft_id: id };
+}
+
+export function showDraft(draftId, { env = process.env } = {}) {
+  let id;
+  try {
+    id = safeNoteId(draftId);
+  } catch {
+    return safeError("DRAFT_NOT_FOUND", "Draft was not found.");
+  }
+
+  const draftPath = path.join(defaultStateDir(env), "drafts", `${id}.json`);
+  if (!fs.existsSync(draftPath)) {
+    return safeError("DRAFT_NOT_FOUND", "Draft was not found.");
+  }
+
+  const draftData = readJson(draftPath);
+  return {
+    ok: true,
+    state: "draft_loaded",
+    draft_id: draftData.draft_id || id,
+    kind: draftData.kind || "",
+    status: draftData.status || "",
+    created_at: draftData.created_at || "",
+    content: draftData.content || "",
+    provenance: draftData.provenance || {},
+    intended_target: draftData.intended_target || {},
+    path: path.join("drafts", `${id}.json`),
+  };
 }
 
 export async function approve(
@@ -2211,9 +2697,14 @@ export function help() {
     "  automate status",
     "  semantic build",
     '  semantic query "問題"',
+    "  assistant route --input <path>",
     "  capture telegram|discord --input <path>",
+    "  message store telegram|discord --input <path>",
+    "  message resolve telegram|discord --source-id <id> --message-id <id>",
+    "  message prune [telegram|discord]",
     '  notify discord --message "訊息"',
     "  draft telegram|discord ...",
+    "  draft show <draft-id> [--message-only]",
     "  approve <draft-id>",
   ].join("\n");
 }
@@ -2291,10 +2782,37 @@ export async function run(argv, env = process.env, deps = {}) {
       2,
     );
   }
+  if (command === "assistant") {
+    if (rest[0] === "route") {
+      return JSON.stringify(routeAssistant(rest), null, 2);
+    }
+    return JSON.stringify(safeError("WIKI_ASSISTANT_COMMAND_UNKNOWN", "Unknown assistant command."), null, 2);
+  }
   if (command === "capture") {
     return JSON.stringify(capture(rest[0], rest.slice(1), { env, ...deps }), null, 2);
   }
+  if (command === "message") {
+    if (rest[0] === "store") {
+      return JSON.stringify(storeMessages(rest[1], rest.slice(2), { env, ...deps }), null, 2);
+    }
+    if (rest[0] === "resolve") {
+      return JSON.stringify(resolveMessage(rest[1], rest.slice(2), { env, ...deps }), null, 2);
+    }
+    if (rest[0] === "prune") {
+      return JSON.stringify(pruneMessages(rest[1] || "", rest.slice(2), { env, ...deps }), null, 2);
+    }
+    return JSON.stringify(safeError("WIKI_MESSAGE_COMMAND_UNKNOWN", "Unknown message command."), null, 2);
+  }
+  if (command === "sedimentation") {
+    const result = sedimentationReply(rest, deps);
+    return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  }
   if (command === "draft") {
+    if (rest[0] === "show") {
+      const result = showDraft(rest[1], { env, ...deps });
+      if (rest.includes("--message-only")) return result.ok ? result.content : result.message;
+      return JSON.stringify(result, null, 2);
+    }
     if (rest[0] === "llm-consolidate") {
       return JSON.stringify(await llmConsolidate(rest.slice(1), { env, ...deps }), null, 2);
     }

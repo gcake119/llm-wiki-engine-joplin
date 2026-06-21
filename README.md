@@ -106,6 +106,72 @@ wiki compile
 
 Hermes skill guidance 位於 `packaging/hermes/skills/wiki/SKILL.md`。Hermes 前台回答記憶問題時仍必須使用 compiled source refs；pending draft、semantic score、automation summary 都不是正式事實來源。
 
+### Telegram Sedimentation Replies
+
+Telegram 自然語言對話可以請 Hermes 協助判斷內容是否值得沉澱，但回覆必須依工具結果分層：
+
+- `draft success`：工具回傳 `ok: true`、`state: "drafted"`、`draft_id` 時，只能說已建立待審草稿，並提醒尚未寫入 Joplin。
+- `capture success`：`wiki capture telegram`／`wiki capture discord` 回傳 `ok: true`、`state: "capture_ingested"`、`accepted > 0` 且 `drafts[0].draft_id` 時，也只能說已建立待審草稿，並提醒尚未寫入 Joplin。
+- `approve success`：`wiki approve` 回傳 `ok: true`、`state: "approved"`、`joplin_note_id` 時，才能說已寫入 Joplin。
+- `empty tool failure`：工具空回應、不可解析、`ok: false` 或缺少必要 id 時，必須說無法確認已建立或已寫回，不能沿用成功語氣。
+
+自然語言 wiki 操作的第一步應該是 engine-owned orchestrator，而不是 Telegram adapter 自己猜：
+
+```zsh
+wiki assistant route --input <normalized-event.json>
+```
+
+`assistant route` 會回 `no_action`、`action_required` 或 `failed_closed`。當它回 `action_required` + `capture_from_resolved_message` 時，adapter 才把 `capture_input` 寫成 JSON 並呼叫 `wiki capture telegram --input <path>`，接著把 capture JSON pipe 到 `wiki sedimentation reply --message-only`。當它回 `action_required` + `capture_inline_body` 時也走同一個 review-gated capture flow。當它回 `action_required` + `show_draft` 時，adapter 只執行 `wiki draft show <draft-id> --message-only` 並直接送 stdout。當它回 `ASSISTANT_REPLY_TARGET_UNRESOLVED` 或 `ASSISTANT_CAPTURE_TARGET_REQUIRED` 時，adapter 必須直接送出該 message，不得讓模型改寫。
+
+使用者不需要說出 command、JSON pipe、路徑或 proof gate 細節。當使用者自然地說「這段值得沉澱」、「整理成待審草稿」、「等我確認後再寫入 Joplin」或類似語句時，Telegram gateway 或 Hermes runtime 必須自動路由到 review-gated draft flow，再用下方 CLI guard 回覆。這類自然語言沉澱要求不得寫入 `/Users/hermes/Drafts`、不得建立 Skill、不得建立 Memory entry，也不得直接宣稱已寫入 Joplin。
+
+自然語言沉澱必須保留對話語境。若使用者是回覆某則 Telegram 訊息並說「這段值得沉澱」或「整理成待審草稿」，chat adapter 必須先用 `reply_to_id` 到 Hermes session／message store 或 Telegram message cache 解析完整原訊息，並以該完整內容作為 capture content；使用者這句指令只代表 routing intent。`reply_to_text` 只能作為顯示用 preview，不得被視為完整內容來源。若 runtime 只能取得 preview、log-truncated snippet、UI 摘要或明顯截斷片段，必須 fail closed，請使用者回覆完整訊息、貼上完整正文，或提供可讀取的 draft id；不得建立部分草稿。若沒有 `reply_to_id`／完整原訊息，但訊息本身在冒號、換行或同則訊息中包含正文，才使用該正文。若訊息只有「這份草稿值得沉澱，幫我整理成待審草稿」這類 command-only 文字，chat adapter 必須請使用者回覆要沉澱的訊息、貼上正文，或提供 draft id，不得只把指令本身建立成草稿。
+
+在 gateway 尚未實作並驗證 `reply_to_id -> full stored original message` 解析之前，reply-context sedimentation 必須保持 fail-closed，不得把 `reply_to_text` preview 送進 `wiki capture`。只有當 runtime 能證明已取得完整原訊息時，才能重新開啟 reply-context capture。
+
+Gateway 取得完整原訊息的方式是先建立本地 message store。每一則 Telegram inbound user message 進入 gateway 時，adapter 應把完整 event 寫成 normalized JSON，呼叫 `wiki message store telegram --input <path>` 儲存 `source_id`、`message_id`、author、timestamp 與完整 `text`。更重要的是，每一則 outbound bot response 送出 Telegram 後，也必須用 Telegram 回傳的 sent `message_id` 和完整 response text 呼叫同一個 `wiki message store telegram --input <path>`。這樣使用者覺得機器人回答值得沉澱並回覆該 bot response 時，`reply_to_id` 才能對應到完整機器人回答。當使用者回覆該訊息要求沉澱時，再用 `wiki message resolve telegram --source-id <chat-id> --message-id <reply_to_id>` 查回完整 capture event。只有 resolve 回傳 `ok: true`、`state: "message_resolved"` 且 event 內有完整 text 時，才把該 event 包成 `{"events":[...]}` 交給 `wiki capture telegram --input <path>`；`MESSAGE_NOT_FOUND`、`MESSAGE_TEXT_EMPTY` 或任何 resolve failure 都必須 fail-closed，不得 fallback 到 `reply_to_text`。
+
+Message store 只是 `reply_to_id` resolver cache，不是永久知識庫。預設 `WIKI_MESSAGE_STORE_TTL_DAYS=14`，超過保留期的 cache 會在 `wiki message store` 時順手 prune，也可以由 gateway 啟動或每日 cron 呼叫 `wiki message prune telegram` 清理。單則 resolver cache 預設 `WIKI_MESSAGE_STORE_MAX_TEXT_BYTES=131072`；超過上限的訊息會以 `MESSAGE_TEXT_TOO_LARGE` rejection 記錄，不會截斷保存，避免未來沉澱出不完整草稿。若過期訊息尚未被 prune，`wiki message resolve` 會回 `MESSAGE_EXPIRED` 並 fail-closed。清理 message store 不會刪除 `drafts/`、`review/`、`capture/runs/` 或任何 Joplin 筆記；只會影響能否回覆較舊訊息建立新草稿。
+
+Telegram gateway 或 Hermes runtime 可以用 CLI guard 格式化工具結果，不需要 import pnpm global source path：
+
+```zsh
+printf '%s' '{"ok":true,"state":"drafted","draft_id":"draft-test"}' | wiki sedimentation reply
+printf '%s' '{"ok":true,"state":"capture_ingested","accepted":1,"drafts":[{"draft_id":"draft-telegram-test"}]}' | wiki sedimentation reply
+printf '%s' '{"ok":true,"state":"approved","joplin_note_id":"note-abc"}' | wiki sedimentation reply
+printf '' | wiki sedimentation reply
+wiki sedimentation reply --suggested
+```
+
+下一步接 Telegram bot／Hermes 對話層時，固定用 message-only handoff，直接把 stdout 當成 outgoing message：
+
+```zsh
+<draft/capture/approve JSON> | wiki sedimentation reply --message-only
+printf '%s' '{"ok":true,"state":"drafted","draft_id":"draft-test"}' | wiki sedimentation reply --message-only
+printf '%s' '{"ok":true,"state":"capture_ingested","accepted":1,"drafts":[{"draft_id":"draft-telegram-test"}]}' | wiki sedimentation reply --message-only
+printf '' | wiki sedimentation reply --message-only
+wiki sedimentation reply --suggested --message-only
+```
+
+Telegram capture allowlist 必須 export 給 `wiki` 子程序讀取，例如 Hermes runtime source 的 env 檔應包含：
+
+```zsh
+export WIKI_CAPTURE_TELEGRAM_ALLOWLIST=538788141
+```
+
+只寫 `WIKI_CAPTURE_TELEGRAM_ALLOWLIST=538788141` 只會設定目前 shell 變數，`wiki capture telegram` 讀不到 `process.env.WIKI_CAPTURE_TELEGRAM_ALLOWLIST`，會回 `CAPTURE_SOURCE_NOT_ALLOWED`。
+
+這個 repo 不實作 Telegram bot adapter；Telegram gateway 或 Hermes runtime 應呼叫 `wiki capture telegram`、`wiki draft ...`、`wiki approve ...`，再依上述 proof 回覆使用者。chat adapter 若使用 `--message-only`，必須直接把 stdout 回 Telegram，不得讓模型重寫成「已成功存入長期筆記庫」。
+
+審閱待審草稿時，chat adapter 應把「給我看 draft-... 的全文」或等價自然語句路由到：
+
+```zsh
+wiki draft show <draft-id>
+wiki draft show <draft-id> --message-only
+```
+
+`--message-only` 只輸出草稿 `content`，可以直接回 Telegram／Hermes。找不到草稿或 draft id 不安全時，必須回 fail-closed 訊息，不要讓模型自行搜尋 `/Users/hermes` 或猜測檔案路徑。
+
 ## Automated Library Maintenance
 
 `wiki automate once` 會執行一輪 review-gated 筆記庫整理流程：
@@ -173,6 +239,8 @@ wiki semantic query "問題"
 wiki capture telegram --input <path>
 wiki capture discord --input <path>
 wiki notify discord --message "訊息"
+wiki sedimentation reply
+wiki sedimentation reply --message-only
 wiki approve <draft-id>
 ```
 
